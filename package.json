@@ -1,0 +1,52 @@
+{
+  "name": "ipi-wallet",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "IPI Wallet for Linux",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "npm run build:electron && concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "build": "tsc && vite build && npm run build:electron",
+    "build:electron": "tsc -p electron/tsconfig.json && cp electron/card_bridge.py dist-electron/card_bridge.py",
+    "validate:repo": "node scripts/check-repo.mjs",
+    "start": "NODE_ENV=production electron .",
+    "check": "npm run validate:repo && tsc --noEmit && tsc -p electron/tsconfig.json --noEmit && biome check .",
+    "test": "vitest run && node electron/test_card_kdf.mjs && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s electron -p 'test_*.py' && bash scripts/host/test-ipi-browser-guard.sh",
+    "package:linux": "npm run build && node scripts/package-linux.mjs && node scripts/release-manifest.mjs",
+    "sbom": "npm sbom --sbom-format cyclonedx",
+    "browser:status": "bash scripts/host/ipi-browser-guard.sh status",
+    "browser:fix": "bash scripts/host/ipi-browser-guard.sh apply",
+    "browser:restore": "bash scripts/host/ipi-browser-guard.sh restore",
+    "contract:test": "cargo +1.85.0 test --locked --manifest-path contracts/ipi-card-vault/Cargo.toml",
+    "contract:build": "cargo +1.85.0 build --locked --release --target wasm32-unknown-unknown --manifest-path contracts/ipi-card-vault/Cargo.toml"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16",
+    "@electron/asar": "4.3.0",
+    "@electron/fuses": "2.1.3",
+    "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
+    "concurrently": "^9.2.1",
+    "electron": "44.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.2",
+    "vitest": "4.1.8",
+    "wait-on": "^8.0.4"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@scure/base": "^2.0.0",
+    "cosmjs-types": "^0.11.0",
+    "qrcode": "^1.5.4"
+  },
+  "allowScripts": {
+    "electron@44.0.0": true,
+    "esbuild@0.28.2": true
+  }
+}

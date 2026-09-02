@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run validate:repo
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+  card-vault-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: contracts/ipi-card-vault
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown --component rustfmt,clippy
+      - run: cargo +1.85.0 fmt -- --check
+      - run: cargo +1.85.0 clippy --locked --all-targets -- -D warnings
+      - run: cargo +1.85.0 test --locked
+      - run: cargo +1.85.0 build --locked --release --target wasm32-unknown-unknown
