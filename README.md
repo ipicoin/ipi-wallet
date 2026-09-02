@@ -7,6 +7,7 @@ application only reads public keys and requests authorized signatures.
 ## Current scope
 
 - IPI Testnet account, balance, receive and card-signed Send;
+- an in-memory, view-only wallet session after the identified card is removed;
 - optional immutable CosmWasm IPI Card Vault with one-of-N shared access,
   delegated card invitations, card revocation and card-signed contract transfers;
 - Ethereum Mainnet address, balance and receive only;
@@ -35,6 +36,13 @@ After Pokédex provisions the three applets, open **IPI Card** and choose
 factory applet. Individual currency initialization is disabled. If the sequence
 is interrupted, running it again verifies both shared passwords on completed
 profiles before continuing.
+
+At every application start the wallet has no account selected. Inserting or
+tapping an initialized card opens an in-memory session containing only public
+addresses and profile metadata. The card can then be removed while balances and
+receive addresses remain visible. Every signing operation still requires the
+same physical card to be present and unlocked; another initialized card switches
+the active session. Closing the application discards the session.
 
 ## Development setup
 

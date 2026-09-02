@@ -15,6 +15,21 @@ Mainnet are receive-only until transaction-intent validation is designed and
 reviewed. Protocol v3 password recovery changes only the signing credential;
 the private keys and addresses stay unchanged inside their applets.
 
+## Wallet identity session
+
+The main process starts without an account and creates a process-local identity
+session only after reading an initialized IPI applet. That session contains
+public keys, derived addresses and the last card profile metadata for IPI,
+Ethereum and Bitcoin. It is never persisted and contains neither private keys
+nor password-derived credentials.
+
+Removing the card changes the session to view-only instead of removing the
+account from the renderer. Public balances and receive addresses can continue
+to refresh. A signing request fails closed unless PC/SC can read the same IPI
+public key and credential salt that produced the reviewed transaction. Inserting
+a different initialized IPI Card replaces the session and invalidates pending
+reviews and one-use unlock authorization. Application exit discards everything.
+
 Card firmware, CAP builds, card inspection and issuance belong to the separate
 private `ipi-pokedex` repository. The protocol boundary between the repositories
 is the versioned APDU contract implemented by the bridge and applets.

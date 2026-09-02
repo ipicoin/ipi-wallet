@@ -16,6 +16,7 @@ import { SignMode } from "cosmjs-types/cosmos/tx/signing/v1beta1/signing";
 import { CARD_VAULT, CHAIN, ENDPOINTS } from "./config.js";
 import { fetchJson } from "./network.js";
 import { assertUnsignedDecimal, CredentialSession, displayAmountToUint128, validateCredential, validateReviewId, withCredentialHex } from "./security.js";
+import { PublicWalletSession, type SessionChainStatus } from "./wallet-session.js";
 
 const currentDir = fileURLToPath(new URL(".", import.meta.url));
 const isDevelopment = !app.isPackaged && process.env.NODE_ENV !== "production";
@@ -87,6 +88,7 @@ type VaultReview = {
 type PendingVaultReview = { review: VaultReview; signDoc: SignDoc; publicKey: string; credentialSalt: string | null; expiresAt: number };
 const pendingReviews = new Map<string, PendingReview>();
 const pendingVaultReviews = new Map<string, PendingVaultReview>();
+const publicWalletSession = new PublicWalletSession();
 
 function hardenedPythonEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
@@ -108,9 +110,13 @@ function validateChainSelector(raw: unknown): ChainSelector {
   return raw;
 }
 
-function clearAllUnlocks(): void {
+function clearUnlockCredential(): void {
   unlockSession?.destroy();
   unlockSession = null;
+}
+
+function clearAllUnlocks(): void {
+  clearUnlockCredential();
   pendingReviews.clear();
   pendingVaultReviews.clear();
 }
@@ -212,26 +218,41 @@ async function accountSummary() {
     const card = await cardBridge("status-profile", "ipi") as CardBridgeStatus;
     activeCardReader = card.reader;
     activeCardHasIpiApplet = true;
-    if (!card.initialized || !card.publicKey) return { exists: false, installed: true, cardConnected: true, address: null, publicKey: null, reader: card.reader, profile: card.profile, credentialSalt: card.credentialSalt, security: card.security, unlocked: false };
+    if (!card.initialized || !card.publicKey) {
+      if (publicWalletSession.clear()) clearAllUnlocks();
+      return { exists: false, installed: true, cardConnected: true, address: null, publicKey: null, reader: card.reader, profile: card.profile, credentialSalt: card.credentialSalt, security: card.security, unlocked: false };
+    }
     const publicKey = secp256k1.Point.fromBytes(Buffer.from(card.publicKey, "hex")).toBytes(true);
     const keyHex = bytesToHex(publicKey);
-    return { exists: true, installed: true, cardConnected: true, address: addressFromPublicKey(publicKey), publicKey: keyHex, reader: card.reader, profile: card.profile, credentialSalt: card.credentialSalt, security: card.security, unlocked: unlockSession?.matches(keyHex) ?? false };
+    const connected = { exists: true, installed: true, cardConnected: true, address: addressFromPublicKey(publicKey), publicKey: keyHex, reader: card.reader, profile: card.profile, credentialSalt: card.credentialSalt, security: card.security, unlocked: unlockSession?.matches(keyHex) ?? false };
+    if (publicWalletSession.rememberAccount(connected)) clearAllUnlocks();
+    return connected;
   } catch {
-    clearAllUnlocks();
+    clearUnlockCredential();
     try {
       const presence = await cardBridge("presence") as CardPresence;
       activeCardReader = presence.reader;
       activeCardHasIpiApplet = false;
+      if (publicWalletSession.clear()) clearAllUnlocks();
       return { exists: false, installed: false, cardConnected: true, address: null, publicKey: null, reader: presence.reader, profile: "unprovisioned", credentialSalt: null, security: { supported: false, state: "applet-missing", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false };
     } catch {
       activeCardReader = null;
       activeCardHasIpiApplet = false;
-      return { exists: false, installed: false, cardConnected: false, address: null, publicKey: null, reader: "", profile: "none", credentialSalt: null, security: { supported: false, state: "disconnected", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false };
+      return publicWalletSession.account() ?? { exists: false, installed: false, cardConnected: false, address: null, publicKey: null, reader: "", profile: "none", credentialSalt: null, security: { supported: false, state: "disconnected", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false };
     }
   }
 }
 
-async function chainAccountSummary(chain: ChainSelector) {
+function unavailableChainSummary(chain: ChainSelector): SessionChainStatus {
+  return {
+    chain, installed: false, initialized: false, address: null, publicKey: null,
+    reader: "", profile: "none", credentialSalt: null, authCounter: null,
+    security: { supported: false, state: "unavailable", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false,
+  };
+}
+
+async function chainAccountSummary(chain: ChainSelector, cardConnected = activeCardReader !== null) {
+  if (!cardConnected) return publicWalletSession.chain(chain) ?? unavailableChainSummary(chain);
   try {
     const card = await cardBridge("status-profile", chain) as CardBridgeStatus;
     activeCardReader = card.reader;
@@ -240,20 +261,26 @@ async function chainAccountSummary(chain: ChainSelector) {
       ? chain === "ethereum" ? ethereumAddressFromPublicKey(publicKey) : bitcoinMainnetAddressFromPublicKey(publicKey)
       : null;
     const keyHex = publicKey ? bytesToHex(publicKey) : null;
-    return {
+    const connected = {
       chain, installed: true, initialized: card.initialized, address,
       publicKey: keyHex,
       reader: card.reader, profile: card.profile, credentialSalt: card.credentialSalt,
       authCounter: card.authCounter, security: card.security,
       unlocked: false,
     };
+    publicWalletSession.rememberChain(connected);
+    return connected;
   } catch {
-    return {
-      chain, installed: false, initialized: false, address: null, publicKey: null,
-      reader: "", profile: "none", credentialSalt: null, authCounter: null,
-      security: { supported: false, state: "unavailable", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false,
-    };
+    publicWalletSession.forgetChain(chain);
+    return unavailableChainSummary(chain);
   }
+}
+
+async function walletSummary() {
+  const account = await accountSummary();
+  const ethereum = await chainAccountSummary("ethereum", account.cardConnected);
+  const bitcoin = await chainAccountSummary("bitcoin", account.cardConnected);
+  return { account, chains: { ethereum, bitcoin } };
 }
 
 function validateExpectedSalt(raw: unknown, card: CardBridgeStatus): string {
@@ -585,6 +612,7 @@ async function signReviewedTransaction(pending: { signDoc: SignDoc; publicKey: s
   try {
     const account = await accountSummary();
     if (!account.exists || !account.address || !account.publicKey) throw new Error("Insert an initialized IPI Card");
+    if (!account.cardConnected) throw new Error("Insert or tap the IPI Card that opened this wallet session");
     if (!account.security.supported) throw new Error("The IPI signing profile does not provide password security");
     if (account.publicKey !== pending.publicKey || account.credentialSalt !== pending.credentialSalt) {
       throw new Error("The signing card changed after transaction review");
@@ -709,11 +737,7 @@ handleIpc("external:open", async (_event, rawUrl: unknown) => {
   await shell.openExternal(url.toString());
 });
 
-handleIpc("account:status", async () => accountSummary());
-handleIpc("chains:status", async () => ({
-  ethereum: await chainAccountSummary("ethereum"),
-  bitcoin: await chainAccountSummary("bitcoin"),
-}));
+handleIpc("wallet:status", async () => walletSummary());
 
 handleIpc("chains:initialize", async (_event, rawChain: unknown, rawCredential: unknown, rawRecoveryCredential: unknown, rawExpectedSalt: unknown) => {
   const chain = validateChainSelector(rawChain);
@@ -917,6 +941,7 @@ handleIpc("send:execute", async (_event, rawReviewId: unknown) => {
     if (!pending || pending.expiresAt <= Date.now()) throw new Error("Transfer review expired; review the transaction again");
     const account = await accountSummary();
     if (!account.exists || !account.address || !account.publicKey) throw new Error("Insert an initialized IPI Card");
+    if (!account.cardConnected) throw new Error("Insert or tap the IPI Card that opened this wallet session");
     if (!account.security.supported) throw new Error("The IPI signing profile does not provide password security");
     if (account.publicKey !== pending.publicKey || account.address !== pending.review.sender || account.credentialSalt !== pending.credentialSalt) {
       throw new Error("The signing card changed after transaction review");
@@ -1184,6 +1209,7 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
     if (pending.review.codeId !== CARD_VAULT.codeId) throw new Error("Vault code configuration changed after review");
     const account = await accountSummary();
     requireVaultAccount(account);
+    if (!account.cardConnected) throw new Error("Insert or tap the IPI Card that opened this wallet session");
     if (account.address !== pending.review.signer || account.publicKey !== pending.publicKey || account.credentialSalt !== pending.credentialSalt) {
       throw new Error("The signing card changed after vault review");
     }
