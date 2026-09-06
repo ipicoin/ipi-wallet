@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Replaced the raw account-query HTTP 404 with an actionable funding message
+  for newly initialized card addresses and clarified the vault creation fee.
 - Enabled the independently verified `ipi-testnet-1` Card Vault deployment at
   code ID `2` by default while retaining an explicit environment override.
 - Integrated one shared Card Vault address with fully equal, unnumbered one-of-N

@@ -382,8 +382,15 @@ async function queryBitcoinBalance(address: string): Promise<string> {
 }
 
 async function queryAccount(address: string): Promise<{ accountNumber: bigint; sequence: bigint }> {
-  const payload = await fetchJson(`${ENDPOINTS.rest}/cosmos/auth/v1beta1/accounts/${encodeURIComponent(address)}`);
-  return parseBaseAccount(payload);
+  try {
+    const payload = await fetchJson(`${ENDPOINTS.rest}/cosmos/auth/v1beta1/accounts/${encodeURIComponent(address)}`);
+    return parseBaseAccount(payload);
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === "HTTP 404") {
+      throw new Error("This card address is not active on IPI Testnet yet. Fund its IPI Receive address with test IPI, wait for confirmation and try again");
+    }
+    throw cause;
+  }
 }
 
 function encodeEthPubkey(key: Uint8Array): Uint8Array {
@@ -1005,6 +1012,9 @@ async function vaultSigningContext(fee: string, rawVaultAddress?: unknown) {
     ? vaultAddress
     : null;
   if (!feeGranter && BigInt(controllerBalance) < BigInt(fee)) {
+    if (!vaultAddress) {
+      throw new Error("This card address needs at least 0.00225 test IPI to create the shared account");
+    }
     throw new Error("The shared wallet and active card address cannot pay the network fee");
   }
   return { account, controllerBalance, chainAccount, feeGranter };
