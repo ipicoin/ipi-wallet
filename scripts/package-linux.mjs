@@ -54,7 +54,7 @@ writeFileSync(join(bundleRoot, "package.json"), `${JSON.stringify({
 mkdirSync(join(appRoot, "resources"), { recursive: true });
 await createPackage(bundleRoot, join(appRoot, "resources/app.asar"));
 cpSync(join(projectRoot, "electron/card_bridge.py"), join(appRoot, "resources/card_bridge.py"));
-cpSync(join(projectRoot, "public/ipi-wallet.png"), join(appRoot, "resources/ipi-wallet.png"));
+cpSync(join(projectRoot, "icon.png"), join(appRoot, "resources/ipi-wallet.png"));
 
 await flipFuses(join(appRoot, "ipi-wallet"), {
   version: FuseVersion.V1,
@@ -88,7 +88,7 @@ writeFileSync(join(debRoot, "DEBIAN/control"), [
 ].join("\n"), { mode: 0o644 });
 mkdirSync(join(debRoot, "usr/share/applications"), { recursive: true });
 mkdirSync(join(debRoot, "usr/share/icons/hicolor/512x512/apps"), { recursive: true });
-cpSync(join(projectRoot, "public/ipi-wallet.png"), join(debRoot, "usr/share/icons/hicolor/512x512/apps/ipi-wallet.png"));
+cpSync(join(projectRoot, "icon.png"), join(debRoot, "usr/share/icons/hicolor/512x512/apps/ipi-wallet.png"));
 writeFileSync(join(debRoot, "usr/share/applications/ipi-wallet.desktop"), [
   "[Desktop Entry]",
   "Type=Application",

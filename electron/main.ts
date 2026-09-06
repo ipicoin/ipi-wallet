@@ -22,7 +22,7 @@ const currentDir = fileURLToPath(new URL(".", import.meta.url));
 const isDevelopment = !app.isPackaged && process.env.NODE_ENV !== "production";
 const appIconPath = app.isPackaged
   ? join(process.resourcesPath, "ipi-wallet.png")
-  : join(currentDir, isDevelopment ? "../public/ipi-wallet.png" : "../dist/ipi-wallet.png");
+  : join(currentDir, "../icon.png");
 const pythonExecutable = app.isPackaged ? "/usr/bin/python3" : (process.env.IPI_WALLET_PYTHON ?? "python3");
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 app.enableSandbox();

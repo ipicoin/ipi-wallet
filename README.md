@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" alt="IPI Wallet icon" width="160">
+</p>
+
 # IPI Wallet
 
 Desktop wallet prototype for Linux, built with Electron, TypeScript and Vite.

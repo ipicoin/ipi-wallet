@@ -22,6 +22,20 @@ const secretPatterns = [
 const binaryExtensions = new Set([".ico", ".png"]);
 const violations = [];
 
+const iconPath = "icon.png";
+if (!candidates.includes(iconPath) || !existsSync(iconPath)) {
+  violations.push(`${iconPath}: canonical application icon is missing from the repository`);
+} else {
+  const icon = readFileSync(iconPath);
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const isPng = icon.length >= 26 && icon.subarray(0, 8).equals(pngSignature);
+  const isExpectedSize = isPng && icon.readUInt32BE(16) === 512 && icon.readUInt32BE(20) === 512;
+  const hasAlpha = isPng && [4, 6].includes(icon[25]);
+  if (!isPng || !isExpectedSize || !hasAlpha) {
+    violations.push(`${iconPath}: icon must be a 512x512 PNG with an alpha channel`);
+  }
+}
+
 for (const path of candidates) {
   if (!existsSync(path)) continue;
   if (path === ".env.example") continue;
