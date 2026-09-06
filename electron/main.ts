@@ -57,8 +57,8 @@ type CardBridgeAction = "presence" | "status" | "initialize" | "verify" | "chang
 type CardPresence = { connected: true; reader: string; atr: string };
 type SendReview = { reviewId: string; expiresAt: string; sender: string; recipient: string; amount: string; fee: string; balance: string; chainId: string };
 type PendingReview = { review: SendReview; signDoc: SignDoc; publicKey: string; credentialSalt: string | null; expiresAt: number };
-type VaultMember = { address: string; label: string | null; invitedBy: string | null; joinedAt: number };
-type VaultInvitation = { address: string; label: string | null; invitedBy: string; createdAt: number; inviterIsActive: boolean };
+type VaultMember = { address: string };
+type VaultInvitation = { address: string };
 type VaultStatus = {
   contractAddress: string;
   codeId: string;
@@ -77,9 +77,9 @@ type VaultReview = {
   signer: string;
   contractAddress: string | null;
   target: string | null;
-  label: string | null;
   amount: string | null;
   fee: string;
+  feeGranter: string | null;
   controllerBalance: string;
   vaultBalance: string | null;
   chainId: string;
@@ -315,16 +315,6 @@ function validateCardAddress(raw: unknown, label = "Card"): string {
   return address;
 }
 
-function validateCardLabel(raw: unknown): string | null {
-  if (raw === null || raw === undefined || raw === "") return null;
-  if (typeof raw !== "string") throw new Error("Card label is malformed");
-  const label = raw.trim();
-  if (label.length < 1 || Array.from(label).length > 64 || /[\u0000-\u001f\u007f]/.test(label)) {
-    throw new Error("Card label must contain 1 to 64 visible characters");
-  }
-  return label;
-}
-
 function parseBaseAccount(payload: any): { accountNumber: bigint; sequence: bigint } {
   let account = payload?.account;
   while (account && !("account_number" in account) && !("accountNumber" in account)) {
@@ -401,14 +391,14 @@ function encodeEthPubkey(key: Uint8Array): Uint8Array {
   return Uint8Array.from([0x0a, key.length, ...key]);
 }
 
-function makeMessageSignDoc(message: Any, publicKey: Uint8Array, accountNumber: bigint, sequence: bigint, fee: string, gasLimit: bigint) {
+function makeMessageSignDoc(message: Any, publicKey: Uint8Array, accountNumber: bigint, sequence: bigint, fee: string, gasLimit: bigint, feeGranter = "") {
   const bodyBytes = TxBody.encode(TxBody.fromPartial({ messages: [message], memo: "" })).finish();
   const authInfoBytes = AuthInfo.encode(AuthInfo.fromPartial({
     signerInfos: [SignerInfo.fromPartial({
       publicKey: Any.fromPartial({ typeUrl: CHAIN.publicKeyTypeUrl, value: encodeEthPubkey(publicKey) }),
       modeInfo: ModeInfo.fromPartial({ single: { mode: SignMode.SIGN_MODE_DIRECT } }), sequence,
     })],
-    fee: Fee.fromPartial({ amount: [{ denom: CHAIN.baseDenom, amount: fee }], gasLimit }),
+    fee: Fee.fromPartial({ amount: [{ denom: CHAIN.baseDenom, amount: fee }], gasLimit, granter: feeGranter }),
   })).finish();
   return SignDoc.fromPartial({ bodyBytes, authInfoBytes, chainId: CHAIN.cosmosChainId, accountNumber });
 }
@@ -436,6 +426,7 @@ function makeVaultExecuteSignDoc(
   publicKey: Uint8Array,
   accountNumber: bigint,
   sequence: bigint,
+  feeGranter: string | null,
 ) {
   const message = MsgExecuteContract.fromPartial({
     sender,
@@ -450,12 +441,12 @@ function makeVaultExecuteSignDoc(
     sequence,
     CARD_VAULT.executeFeeBase,
     CARD_VAULT.executeGasLimit,
+    feeGranter ?? "",
   );
 }
 
 function makeVaultInstantiateSignDoc(
   sender: string,
-  label: string | null,
   publicKey: Uint8Array,
   accountNumber: bigint,
   sequence: bigint,
@@ -465,8 +456,8 @@ function makeVaultInstantiateSignDoc(
     sender,
     admin: "",
     codeId: BigInt(CARD_VAULT.codeId),
-    label: `IPI Card Vault · ${sender.slice(0, 12)}`,
-    msg: jsonBytes({ label }),
+    label: "IPI Card Vault",
+    msg: jsonBytes({}),
     funds: [],
   });
   return makeMessageSignDoc(
@@ -514,32 +505,12 @@ async function verifyVaultContract(contractAddress: string): Promise<string> {
   return codeId;
 }
 
-function safeTimestamp(raw: unknown, label: string): number {
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Vault returned malformed ${label}`);
-  return value;
-}
-
 function normalizeVaultMember(raw: any): VaultMember {
-  return {
-    address: validateCardAddress(raw?.address, "Member"),
-    label: validateCardLabel(raw?.label),
-    invitedBy: raw?.invited_by === null || raw?.invited_by === undefined
-      ? null
-      : validateCardAddress(raw.invited_by, "Inviter"),
-    joinedAt: safeTimestamp(raw?.joined_at, "member timestamp"),
-  };
+  return { address: validateCardAddress(raw?.address, "Member") };
 }
 
 function normalizeVaultInvitation(raw: any): VaultInvitation {
-  if (typeof raw?.inviter_is_active !== "boolean") throw new Error("Vault returned malformed invitation status");
-  return {
-    address: validateCardAddress(raw?.address, "Invited card"),
-    label: validateCardLabel(raw?.label),
-    invitedBy: validateCardAddress(raw?.invited_by, "Inviter"),
-    createdAt: safeTimestamp(raw?.created_at, "invitation timestamp"),
-    inviterIsActive: raw.inviter_is_active,
-  };
+  return { address: validateCardAddress(raw?.address, "Invited card") };
 }
 
 async function queryVaultStatus(rawContractAddress: unknown, currentCardAddress: string): Promise<VaultStatus> {
@@ -578,6 +549,21 @@ async function queryVaultStatus(rawContractAddress: unknown, currentCardAddress:
     members: members.members.map(normalizeVaultMember),
     invitations: invitations.invitations.map(normalizeVaultInvitation),
   };
+}
+
+async function hasVaultFeeGrant(contractAddress: string, cardAddress: string): Promise<boolean> {
+  const payload = await fetchJson(
+    `${ENDPOINTS.rest}/cosmos/feegrant/v1beta1/allowances/${encodeURIComponent(cardAddress)}?pagination.limit=100`,
+  ) as Record<string, any>;
+  if (!Array.isArray(payload?.allowances)) throw new Error("Fee grant query returned malformed data");
+  return payload.allowances.some((grant: any) => {
+    const allowedMessages = grant?.allowance?.allowed_messages ?? grant?.allowance?.allowedMessages;
+    return String(grant?.granter ?? "").toLowerCase() === contractAddress
+      && String(grant?.grantee ?? "").toLowerCase() === cardAddress
+      && grant?.allowance?.["@type"] === "/cosmos.feegrant.v1beta1.AllowedMsgAllowance"
+      && Array.isArray(allowedMessages)
+      && allowedMessages.includes("/cosmwasm.wasm.v1.MsgExecuteContract");
+  });
 }
 
 async function broadcastAndConfirm(txBytes: Uint8Array, expectedHash: string): Promise<{ txHash: string; height: string; events: unknown[] }> {
@@ -1001,19 +987,27 @@ function storeVaultReview(
   return complete;
 }
 
-async function vaultSigningContext(fee: string) {
+async function vaultSigningContext(fee: string, rawVaultAddress?: unknown) {
   const account = await accountSummary();
   requireVaultAccount(account);
-  const [controllerBalance, cometStatus] = await Promise.all([
+  const vaultAddress = rawVaultAddress === undefined
+    ? null
+    : validateIpiAddress(rawVaultAddress, "Vault");
+  const [controllerBalance, cometStatus, chainAccount, vaultBalance, vaultHasFeeGrant] = await Promise.all([
     queryBalance(account.address),
     fetchJson(`${ENDPOINTS.comet}/status`) as Promise<Record<string, any>>,
+    queryAccount(account.address),
+    vaultAddress ? queryBalance(vaultAddress) : Promise.resolve("0"),
+    vaultAddress ? hasVaultFeeGrant(vaultAddress, account.address).catch(() => false) : Promise.resolve(false),
   ]);
   assertIpiChain(cometStatus);
-  if (BigInt(controllerBalance) < BigInt(fee)) {
-    throw new Error("The active card address needs enough IPI to pay the network fee");
+  const feeGranter = vaultAddress && vaultHasFeeGrant && BigInt(vaultBalance) >= BigInt(fee)
+    ? vaultAddress
+    : null;
+  if (!feeGranter && BigInt(controllerBalance) < BigInt(fee)) {
+    throw new Error("The shared wallet and active card address cannot pay the network fee");
   }
-  const chainAccount = await queryAccount(account.address);
-  return { account, controllerBalance, chainAccount };
+  return { account, controllerBalance, chainAccount, feeGranter };
 }
 
 handleIpc("vault:configuration", async () => ({
@@ -1028,12 +1022,10 @@ handleIpc("vault:status", async (_event, rawContractAddress: unknown) => {
   return queryVaultStatus(rawContractAddress, account.address);
 });
 
-handleIpc("vault:review-create", async (_event, rawLabel: unknown) => {
-  const label = validateCardLabel(rawLabel);
-  const { account, controllerBalance, chainAccount } = await vaultSigningContext(CARD_VAULT.instantiateFeeBase);
+handleIpc("vault:review-create", async () => {
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.instantiateFeeBase);
   const signDoc = makeVaultInstantiateSignDoc(
     account.address,
-    label,
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
@@ -1043,18 +1035,17 @@ handleIpc("vault:review-create", async (_event, rawLabel: unknown) => {
     signer: account.address,
     contractAddress: null,
     target: null,
-    label,
     amount: null,
     fee: CARD_VAULT.instantiateFeeBase,
+    feeGranter,
     controllerBalance,
     vaultBalance: null,
   }, signDoc);
 });
 
-handleIpc("vault:review-invite", async (_event, rawContractAddress: unknown, rawCardAddress: unknown, rawLabel: unknown) => {
+handleIpc("vault:review-invite", async (_event, rawContractAddress: unknown, rawCardAddress: unknown) => {
   const cardAddress = validateCardAddress(rawCardAddress, "Invited card");
-  const label = validateCardLabel(rawLabel);
-  const { account, controllerBalance, chainAccount } = await vaultSigningContext(CARD_VAULT.executeFeeBase);
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.executeFeeBase, rawContractAddress);
   if (cardAddress === account.address) throw new Error("The active card is already connected");
   const [status, member, invitation] = await Promise.all([
     queryVaultStatus(rawContractAddress, account.address),
@@ -1064,33 +1055,37 @@ handleIpc("vault:review-invite", async (_event, rawContractAddress: unknown, raw
   if (!status.currentMember) throw new Error("Only an active vault card can invite another card");
   if (member?.member) throw new Error("This card is already active in the vault");
   if (invitation?.invitation) throw new Error("This card already has a pending invitation");
+  const requiredVaultBalance = BigInt(feeGranter ? CARD_VAULT.executeFeeBase : "0") + 1n;
+  if (BigInt(status.balance) < requiredVaultBalance) {
+    throw new Error("The shared wallet needs enough IPI to initialize the invited card controller");
+  }
   const signDoc = makeVaultExecuteSignDoc(
     account.address,
     status.contractAddress,
-    { invite_card: { address: cardAddress, label } },
+    { invite_card: { address: cardAddress } },
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
+    feeGranter,
   );
   return storeVaultReview(account, {
     action: "invite",
     signer: account.address,
     contractAddress: status.contractAddress,
     target: cardAddress,
-    label,
     amount: null,
     fee: CARD_VAULT.executeFeeBase,
+    feeGranter,
     controllerBalance,
     vaultBalance: status.balance,
   }, signDoc);
 });
 
 handleIpc("vault:review-accept", async (_event, rawContractAddress: unknown) => {
-  const { account, controllerBalance, chainAccount } = await vaultSigningContext(CARD_VAULT.executeFeeBase);
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.executeFeeBase, rawContractAddress);
   const status = await queryVaultStatus(rawContractAddress, account.address);
   if (status.currentMember) throw new Error("This card is already active in the vault");
   if (!status.currentInvitation) throw new Error("This card has no pending invitation");
-  if (!status.currentInvitation.inviterIsActive) throw new Error("The inviting card is no longer active");
   const signDoc = makeVaultExecuteSignDoc(
     account.address,
     status.contractAddress,
@@ -1098,15 +1093,16 @@ handleIpc("vault:review-accept", async (_event, rawContractAddress: unknown) => 
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
+    feeGranter,
   );
   return storeVaultReview(account, {
     action: "accept",
     signer: account.address,
     contractAddress: status.contractAddress,
     target: account.address,
-    label: status.currentInvitation.label,
     amount: null,
     fee: CARD_VAULT.executeFeeBase,
+    feeGranter,
     controllerBalance,
     vaultBalance: status.balance,
   }, signDoc);
@@ -1114,7 +1110,7 @@ handleIpc("vault:review-accept", async (_event, rawContractAddress: unknown) => 
 
 handleIpc("vault:review-cancel", async (_event, rawContractAddress: unknown, rawCardAddress: unknown) => {
   const cardAddress = validateCardAddress(rawCardAddress, "Invited card");
-  const { account, controllerBalance, chainAccount } = await vaultSigningContext(CARD_VAULT.executeFeeBase);
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.executeFeeBase, rawContractAddress);
   const status = await queryVaultStatus(rawContractAddress, account.address);
   if (!status.currentMember) throw new Error("Only an active vault card can cancel an invitation");
   const invitation = await queryVaultSmart(status.contractAddress, { invitation: { address: cardAddress } });
@@ -1126,15 +1122,16 @@ handleIpc("vault:review-cancel", async (_event, rawContractAddress: unknown, raw
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
+    feeGranter,
   );
   return storeVaultReview(account, {
     action: "cancel",
     signer: account.address,
     contractAddress: status.contractAddress,
     target: cardAddress,
-    label: null,
     amount: null,
     fee: CARD_VAULT.executeFeeBase,
+    feeGranter,
     controllerBalance,
     vaultBalance: status.balance,
   }, signDoc);
@@ -1142,7 +1139,7 @@ handleIpc("vault:review-cancel", async (_event, rawContractAddress: unknown, raw
 
 handleIpc("vault:review-remove", async (_event, rawContractAddress: unknown, rawCardAddress: unknown) => {
   const cardAddress = validateCardAddress(rawCardAddress, "Removed card");
-  const { account, controllerBalance, chainAccount } = await vaultSigningContext(CARD_VAULT.executeFeeBase);
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.executeFeeBase, rawContractAddress);
   const status = await queryVaultStatus(rawContractAddress, account.address);
   if (!status.currentMember) throw new Error("Only an active vault card can remove a card");
   if (status.memberCount <= 1) throw new Error("The final active card cannot be removed");
@@ -1155,15 +1152,16 @@ handleIpc("vault:review-remove", async (_event, rawContractAddress: unknown, raw
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
+    feeGranter,
   );
   return storeVaultReview(account, {
     action: "remove",
     signer: account.address,
     contractAddress: status.contractAddress,
     target: cardAddress,
-    label: null,
     amount: null,
     fee: CARD_VAULT.executeFeeBase,
+    feeGranter,
     controllerBalance,
     vaultBalance: status.balance,
   }, signDoc);
@@ -1172,11 +1170,12 @@ handleIpc("vault:review-remove", async (_event, rawContractAddress: unknown, raw
 handleIpc("vault:review-transfer", async (_event, rawContractAddress: unknown, rawRecipient: unknown, rawAmount: unknown) => {
   const recipient = validateIpiAddress(rawRecipient);
   const amount = displayAmountToUint128(rawAmount, CHAIN.decimals);
-  const { account, controllerBalance, chainAccount } = await vaultSigningContext(CARD_VAULT.executeFeeBase);
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.executeFeeBase, rawContractAddress);
   const status = await queryVaultStatus(rawContractAddress, account.address);
   if (!status.currentMember) throw new Error("Only an active vault card can transfer shared funds");
   if (recipient === status.contractAddress) throw new Error("Recipient must differ from the vault");
-  if (BigInt(amount) > BigInt(status.balance)) throw new Error("Amount exceeds the shared vault balance");
+  const spendableBalance = BigInt(status.balance) - BigInt(feeGranter ? CARD_VAULT.executeFeeBase : "0");
+  if (BigInt(amount) > spendableBalance) throw new Error("Amount plus the network fee exceeds the shared vault balance");
   const signDoc = makeVaultExecuteSignDoc(
     account.address,
     status.contractAddress,
@@ -1184,15 +1183,16 @@ handleIpc("vault:review-transfer", async (_event, rawContractAddress: unknown, r
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
+    feeGranter,
   );
   return storeVaultReview(account, {
     action: "transfer",
     signer: account.address,
     contractAddress: status.contractAddress,
     target: recipient,
-    label: null,
     amount,
     fee: CARD_VAULT.executeFeeBase,
+    feeGranter,
     controllerBalance,
     vaultBalance: status.balance,
   }, signDoc);
@@ -1213,12 +1213,32 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
     if (account.address !== pending.review.signer || account.publicKey !== pending.publicKey || account.credentialSalt !== pending.credentialSalt) {
       throw new Error("The signing card changed after vault review");
     }
-    const controllerBalance = await queryBalance(account.address);
-    if (BigInt(controllerBalance) < BigInt(pending.review.fee)) throw new Error("The active card address cannot pay the network fee");
+    if (pending.review.feeGranter) {
+      if (pending.review.feeGranter !== pending.review.contractAddress) {
+        throw new Error("The reviewed fee granter does not match the shared wallet");
+      }
+      const [feeBalance, grantExists] = await Promise.all([
+        queryBalance(pending.review.feeGranter),
+        hasVaultFeeGrant(pending.review.feeGranter, account.address),
+      ]);
+      if (!grantExists) throw new Error("The shared wallet fee grant is no longer available");
+      if (BigInt(feeBalance) < BigInt(pending.review.fee)) {
+        throw new Error("The shared wallet can no longer pay the network fee");
+      }
+    } else {
+      const controllerBalance = await queryBalance(account.address);
+      if (BigInt(controllerBalance) < BigInt(pending.review.fee)) {
+        throw new Error("The active card address cannot pay the network fee");
+      }
+    }
     if (pending.review.contractAddress) {
       const status = await queryVaultStatus(pending.review.contractAddress, account.address);
       if (pending.review.action === "invite" && !status.currentMember) throw new Error("The active card is no longer a vault member");
-      if (pending.review.action === "accept" && (!status.currentInvitation || !status.currentInvitation.inviterIsActive)) throw new Error("The invitation is no longer valid");
+      if (pending.review.action === "invite") {
+        const requiredVaultBalance = BigInt(pending.review.feeGranter ? pending.review.fee : "0") + 1n;
+        if (BigInt(status.balance) < requiredVaultBalance) throw new Error("The shared wallet can no longer initialize the invited card controller");
+      }
+      if (pending.review.action === "accept" && !status.currentInvitation) throw new Error("The invitation is no longer valid");
       if (pending.review.action === "cancel") {
         if (!status.currentMember) throw new Error("The active card is no longer a vault member");
         if (!pending.review.target) throw new Error("The reviewed invitation target is missing");
@@ -1234,7 +1254,8 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
       }
       if (pending.review.action === "transfer") {
         if (!status.currentMember) throw new Error("The active card is no longer a vault member");
-        if (!pending.review.amount || BigInt(pending.review.amount) > BigInt(status.balance)) throw new Error("The vault balance changed after review");
+        const spendableBalance = BigInt(status.balance) - BigInt(pending.review.feeGranter ? pending.review.fee : "0");
+        if (!pending.review.amount || BigInt(pending.review.amount) > spendableBalance) throw new Error("The vault balance changed after review");
       }
     }
     const signed = await signReviewedTransaction(pending);

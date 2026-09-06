@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Integrated one shared Card Vault address with fully equal, unnumbered one-of-N
+  cards and vault-sponsored CosmWasm execution fees.
 - Added a process-local, view-only wallet session that survives card removal.
 - Required the same physical IPI Card to be present for every signing operation.
 - Added automatic session switching when another initialized card is detected.

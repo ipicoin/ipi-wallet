@@ -26,8 +26,8 @@ interface Window {
     executeSend(reviewId: string): Promise<SendResult>;
     getVaultConfiguration(): Promise<{ available: boolean; codeId: string | null; chainId: string }>;
     getVaultStatus(contractAddress: string): Promise<VaultStatus>;
-    reviewVaultCreate(label: string): Promise<VaultReview>;
-    reviewVaultInvite(contractAddress: string, cardAddress: string, label: string): Promise<VaultReview>;
+    reviewVaultCreate(): Promise<VaultReview>;
+    reviewVaultInvite(contractAddress: string, cardAddress: string): Promise<VaultReview>;
     reviewVaultAccept(contractAddress: string): Promise<VaultReview>;
     reviewVaultCancel(contractAddress: string, cardAddress: string): Promise<VaultReview>;
     reviewVaultRemove(contractAddress: string, cardAddress: string): Promise<VaultReview>;
@@ -41,8 +41,8 @@ type AccountStatus = { exists: boolean; installed: boolean; cardConnected: boole
 type ChainAccountStatus = { chain: "ethereum" | "bitcoin"; installed: boolean; initialized: boolean; address: string | null; publicKey: string | null; reader: string; profile: string; credentialSalt: string | null; authCounter: number | null; security: CardSecurity; unlocked: boolean };
 type SendReview = { reviewId: string; expiresAt: string; sender: string; recipient: string; amount: string; fee: string; balance: string; chainId: string };
 type SendResult = SendReview & { txHash: string; height: string; balanceBefore: string; balanceAfter: string; balanceDeltaMatches: boolean; signatureVerified: boolean };
-type VaultMember = { address: string; label: string | null; invitedBy: string | null; joinedAt: number };
-type VaultInvitation = { address: string; label: string | null; invitedBy: string; createdAt: number; inviterIsActive: boolean };
+type VaultMember = { address: string };
+type VaultInvitation = { address: string };
 type VaultStatus = { contractAddress: string; codeId: string; balance: string; memberCount: number; currentMember: VaultMember | null; currentInvitation: VaultInvitation | null; members: VaultMember[]; invitations: VaultInvitation[] };
-type VaultReview = { reviewId: string; expiresAt: string; action: "create" | "invite" | "accept" | "cancel" | "remove" | "transfer"; signer: string; contractAddress: string | null; target: string | null; label: string | null; amount: string | null; fee: string; controllerBalance: string; vaultBalance: string | null; chainId: string; codeId: string };
+type VaultReview = { reviewId: string; expiresAt: string; action: "create" | "invite" | "accept" | "cancel" | "remove" | "transfer"; signer: string; contractAddress: string | null; target: string | null; amount: string | null; fee: string; feeGranter: string | null; controllerBalance: string; vaultBalance: string | null; chainId: string; codeId: string };
 type VaultResult = VaultReview & { txHash: string; height: string; contractAddress: string; signatureVerified: boolean };

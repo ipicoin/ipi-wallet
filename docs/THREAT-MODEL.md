@@ -5,7 +5,7 @@
 - private keys and password-derived card credentials;
 - the exact Cosmos `SignDoc` approved by the user;
 - card AID/profile selection and chain identity;
-- IPI Card Vault membership, invitation provenance and immutable code identity;
+- IPI Card Vault membership, invitations and immutable code identity;
 - release artifacts and update provenance.
 
 ## Trust boundaries and controls
@@ -24,7 +24,11 @@ The vault deliberately uses one-of-N authority. Adding cards increases the
 number of independent authorization paths: any active card with valid password
 access can transfer all vault funds and invite or remove cards. Losing a locked
 card alone does not authorize an attacker, but the card should be removed from
-membership when practical. Each controller also needs native IPI for gas.
+membership when practical. The vault normally sponsors CosmWasm execution
+through equal fee grants. An
+invited controller receives only a bounded acceptance allowance; active member
+allowances are revoked atomically when membership is removed. If sponsorship
+is unavailable, the controller must pay the fee itself.
 
 The signing credential is held in a zeroable main-process buffer for at most two
 minutes and one signing attempt. It is cleared on use, lock, window blur, screen

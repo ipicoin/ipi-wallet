@@ -21,9 +21,7 @@
     "sbom": "npm sbom --sbom-format cyclonedx",
     "browser:status": "bash scripts/host/ipi-browser-guard.sh status",
     "browser:fix": "bash scripts/host/ipi-browser-guard.sh apply",
-    "browser:restore": "bash scripts/host/ipi-browser-guard.sh restore",
-    "contract:test": "cargo +1.85.0 test --locked --manifest-path contracts/ipi-card-vault/Cargo.toml",
-    "contract:build": "cargo +1.85.0 build --locked --release --target wasm32-unknown-unknown --manifest-path contracts/ipi-card-vault/Cargo.toml"
+    "browser:restore": "bash scripts/host/ipi-browser-guard.sh restore"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",

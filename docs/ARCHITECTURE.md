@@ -36,21 +36,21 @@ is the versioned APDU contract implemented by the bridge and applets.
 
 ## IPI Card Vault
 
-`contracts/ipi-card-vault` is an immutable CosmWasm one-of-N account for native
-IPI. The contract address is the shared receive address. Every accepted card
-keeps its own key and controller address; any active controller can transfer
-vault funds or invite another controller. An invitation records its active
-inviter and becomes membership only when the invited card signs
-`accept_invitation` itself. Consequently, invitation authority propagates to
-every accepted card without copying private keys.
+The separate `ipi-wallet-multicards` repository contains the immutable CosmWasm
+one-of-N account and its server deployment material. The contract address is
+the shared receive address. Every accepted card keeps its own key and controller
+address; any active controller can transfer vault funds, invite another
+controller, cancel invitations or remove members. There are no card numbers,
+labels or privileged roles. An invitation belongs to the vault and becomes
+membership only when the invited card signs `accept_invitation` itself.
 
 The renderer may remember a vault address, but that value is untrusted. Before
 querying or signing, the main process validates the address, exact configured
 code ID, absent migration administrator, contract response schema, current
-membership and human-readable action. Contract execution uses the same opaque,
-expiring `SignDoc` review and local signature verification as native transfers.
-The controller address pays gas while the transferred amount comes from the
-vault balance.
+membership, fee grant and human-readable action. Contract execution uses the
+same opaque, expiring `SignDoc` review and local signature verification as
+native transfers. The vault sponsors execution fees when its restricted
+feegrant and balance are available; otherwise the controller address pays.
 
 ## Build outputs
 

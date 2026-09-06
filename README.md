@@ -58,12 +58,12 @@ npm run dev
 overrides are available through `IPI_ETHEREUM_MAINNET_RPC` and
 `IPI_BITCOIN_MAINNET_API`.
 
-The shared-card feature requires the contract in
-[`contracts/ipi-card-vault`](contracts/ipi-card-vault) to be reviewed, stored on
-IPI Testnet and configured through `IPI_CARD_VAULT_CODE_ID`. The wallet accepts
-only immutable instances matching that exact code ID. Every controller address
-needs a small IPI balance for its own transaction fees, including invitation
-acceptance.
+The shared-card contract, tracked Wasm artifact and node-operator handoff live
+in the separate sibling repository `ipi-wallet-multicards`. Its verified IPI
+Testnet code ID must be provided through `IPI_CARD_VAULT_CODE_ID`. The wallet
+accepts only immutable instances matching that exact code ID. The shared vault
+sponsors CosmWasm execution fees for its equally authorized cards when funded;
+the creating card must still pay the one-time instantiation fee.
 
 ## Validation and production-mode run
 
@@ -73,13 +73,6 @@ npm run check
 npm test
 npm run build
 npm start
-```
-
-Contract validation additionally requires Rust 1.85.0:
-
-```sh
-npm run contract:test
-npm run contract:build
 ```
 
 `npm run package:linux` creates a fused ASAR application and Debian package in

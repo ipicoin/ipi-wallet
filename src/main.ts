@@ -285,11 +285,10 @@ function assetRow(asset: AssetSelector): string {
 function vaultMemberRows(status: VaultStatus): string {
   const rows = status.members.map((member) => {
     const active = member.address === account.address;
-    const provenance = member.invitedBy ? `Invited by ${shortAddress(member.invitedBy)}` : "Created the vault";
     const action = status.currentMember && status.memberCount > 1
       ? `<button class="text-button danger" type="button" data-vault-remove="${escapeHtml(member.address)}" ${account.cardConnected ? "" : "disabled"}>${active ? "Remove this card" : "Remove"}</button>`
       : '<span class="tag green">ACTIVE</span>';
-    return `<div class="setting-row"><div><strong>${escapeHtml(member.label ?? shortAddress(member.address))}${active ? " · this card" : ""}</strong><span>${escapeHtml(member.address)}<br>${escapeHtml(provenance)}</span></div>${action}</div>`;
+    return `<div class="setting-row"><div><strong>${escapeHtml(shortAddress(member.address))}${active ? " · this card" : ""}</strong><span>${escapeHtml(member.address)}<br>Equal 1-of-${escapeHtml(status.memberCount)} authority</span></div>${action}</div>`;
   }).join("");
   return rows || notice("No cards returned", "Refresh the vault state before continuing.");
 }
@@ -299,8 +298,8 @@ function vaultInvitationRows(status: VaultStatus): string {
   const rows = status.invitations.map((invitation) => {
     const action = status.currentMember
       ? `<button class="text-button danger" type="button" data-vault-cancel="${escapeHtml(invitation.address)}" ${account.cardConnected ? "" : "disabled"}>Cancel</button>`
-      : `<span class="tag ${invitation.inviterIsActive ? "" : "muted"}">${invitation.inviterIsActive ? "PENDING" : "INVALID"}</span>`;
-    return `<div class="setting-row"><div><strong>${escapeHtml(invitation.label ?? shortAddress(invitation.address))}</strong><span>${escapeHtml(invitation.address)}<br>Invited by ${escapeHtml(shortAddress(invitation.invitedBy))}</span></div>${action}</div>`;
+      : '<span class="tag">PENDING</span>';
+    return `<div class="setting-row"><div><strong>${escapeHtml(shortAddress(invitation.address))}</strong><span>${escapeHtml(invitation.address)}<br>Waiting for this card to accept</span></div>${action}</div>`;
   }).join("");
   return `<h3>Pending invitations</h3>${rows}`;
 }
@@ -313,7 +312,7 @@ function renderCardsView(): string {
     return `${notice("Card Vault code is not deployed yet", "Build and store the audited CosmWasm contract, then set IPI_CARD_VAULT_CODE_ID to its immutable on-chain code ID.")}<div class="form-panel settings"><h3>Implementation ready</h3><p>The wallet will only connect to an immutable contract matching the configured code ID. This prevents a pasted address from redirecting signatures to unrelated contract code.</p></div>`;
   }
   if (!vaultAddress) {
-    return `<div class="section-grid"><form class="form-panel" id="vault-create-form"><h3>Create a shared IPI account</h3><p>This card becomes the first active member. Every card it later invites receives the same full 1-of-N authority.</p><label>Name of this card<input id="vault-create-label" maxlength="64" autocomplete="off" placeholder="Primary card"></label><div class="review" id="vault-review"><span>Contract code</span><strong>${escapeHtml(vaultConfiguration.codeId)}</strong><span>Upgrade administrator</span><strong>None · immutable</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-create-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review vault creation" : "Insert or tap card to continue"}</button></form><form class="form-panel" id="vault-connect-form"><h3>Open an existing vault</h3><p>Use this on an invited card. The wallet verifies the contract code and checks its on-chain invitation.</p><label>Vault address<input id="vault-connect-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="dialog-error" id="vault-connect-error"></div><button class="button secondary wide">Verify and open</button></form></div>`;
+    return `<div class="section-grid"><form class="form-panel" id="vault-create-form"><h3>Create a shared IPI account</h3><p>This card becomes the first equal member. Every card added later receives exactly the same full 1-of-N authority. There are no card numbers or privileged roles.</p><div class="review" id="vault-review"><span>Contract code</span><strong>${escapeHtml(vaultConfiguration.codeId)}</strong><span>Upgrade administrator</span><strong>None · immutable</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-create-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review vault creation" : "Insert or tap card to continue"}</button></form><form class="form-panel" id="vault-connect-form"><h3>Open an existing vault</h3><p>Use this on an invited card. The wallet verifies the contract code and checks its on-chain invitation.</p><label>Vault address<input id="vault-connect-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="dialog-error" id="vault-connect-error"></div><button class="button secondary wide">Verify and open</button></form></div>`;
   }
   if (!vaultStatus) {
     return `<div class="form-panel settings">${notice("Unable to open this vault", vaultError || "Vault state is loading.")}<code>${escapeHtml(vaultAddress)}</code><button class="button secondary" id="vault-disconnect">Forget this vault address</button></div>`;
@@ -321,10 +320,10 @@ function renderCardsView(): string {
   const status = vaultStatus;
   const role = status.currentMember ? "ACTIVE CARD" : status.currentInvitation ? "INVITED CARD" : "NOT AUTHORIZED";
   const invitationPanel = status.currentInvitation && !status.currentMember
-    ? `<div class="form-panel"><h3>Accept invitation</h3><p>${escapeHtml(status.currentInvitation.label ?? "This card")} was invited by ${escapeHtml(status.currentInvitation.invitedBy)}. Acceptance must be signed by this physical card.</p><div class="review" id="vault-review"><span>Shared account</span><strong>${escapeHtml(status.contractAddress)}</strong><span>Authority</span><strong>Full 1-of-${escapeHtml(status.memberCount + 1)}</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-accept" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review acceptance" : "Insert or tap card to continue"}</button></div>`
+    ? `<div class="form-panel"><h3>Accept invitation</h3><p>This physical card was invited to the shared address. After acceptance it behaves exactly like every existing card.</p><div class="review" id="vault-review"><span>Shared account</span><strong>${escapeHtml(status.contractAddress)}</strong><span>Authority</span><strong>Full 1-of-${escapeHtml(status.memberCount + 1)}</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-accept" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review acceptance" : "Insert or tap card to continue"}</button></div>`
     : "";
   const managementPanel = status.currentMember
-    ? `<form class="form-panel" id="vault-invite-form"><h3>Invite another card</h3><p>The new card becomes active only after signing its own acceptance. Once active, it can invite further cards.</p><label>New card IPI address<input id="vault-invite-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><label>Card name<input id="vault-invite-label" maxlength="64" autocomplete="off" placeholder="Backup card"></label><div class="review" id="vault-review"><span>Inviter</span><strong>${escapeHtml(account.address)}</strong><span>Result</span><strong>New full 1-of-N member after acceptance</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-invite-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review invitation" : "Insert or tap card to continue"}</button></form>`
+    ? `<form class="form-panel" id="vault-invite-form"><h3>Add another equal card</h3><p>The new card becomes active only after signing its own acceptance. It receives no number or special role and can perform every vault action.</p><label>New card IPI controller address<input id="vault-invite-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="review" id="vault-review"><span>Shared address</span><strong>${escapeHtml(status.contractAddress)}</strong><span>Result</span><strong>New full 1-of-N member after acceptance</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-invite-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review invitation" : "Insert or tap card to continue"}</button></form>`
     : `${notice("This card is not authorized", "It has neither active membership nor a valid invitation for this shared account.")}`;
   return `<div class="portfolio-card"><div class="portfolio-top"><div><span class="kicker">SHARED IPI BALANCE</span><div class="portfolio-value" id="vault-balance">${escapeHtml(formatIpi(status.balance))}</div><small>${escapeHtml(status.memberCount)} active ${status.memberCount === 1 ? "card" : "cards"} · any one can authorize</small></div><span class="tag green">${role}</span></div><div class="portfolio-account"><div><span>Shared receive address</span><code>${escapeHtml(status.contractAddress)}</code></div><button class="text-button" id="vault-copy-address">Copy</button></div></div><div class="section-grid"><div class="form-panel settings"><h3>Active cards</h3>${vaultMemberRows(status)}${vaultInvitationRows(status)}${status.memberCount > status.members.length ? `<p>Showing the first ${escapeHtml(status.members.length)} cards. Membership itself has no fixed contract limit.</p>` : ""}<button class="button secondary" id="vault-disconnect">Forget locally</button></div><div>${invitationPanel || managementPanel}</div></div>`;
 }
@@ -360,7 +359,7 @@ function renderView(view: ViewName): void {
     if (!canUseVault) sendSource = "card";
     const sourcePicker = canUseVault ? `<label>Source<select id="send-source"><option value="vault" ${sendSource === "vault" ? "selected" : ""}>Shared IPI Card Vault</option><option value="card" ${sendSource === "card" ? "selected" : ""}>This card address</option></select></label>` : "";
     const sourceNotice = sendSource === "vault"
-      ? notice("Shared 1-of-N transfer", "The amount leaves the shared contract. This card authorizes it independently and pays only the network execution fee from its own address.")
+      ? notice("Shared 1-of-N transfer", "The amount leaves the shared contract. This card authorizes it independently; the shared wallet sponsors the network fee whenever its fee grant is available.")
       : notice("Card-signed IPI Testnet transaction", "A password-protected card consumes its unlock authorization for one signing attempt. The returned signature is verified locally before broadcast.");
     const fee = sendSource === "vault" ? "0.0012 IPI" : "0.0003 IPI";
     viewRoot.innerHTML = !account.exists ? `${notice("Connect your IPI Card first", "An initialized card is required to open a wallet session.")}` : `${signingCardNotice()}${sourceNotice}<form class="form-panel" id="send-form">${sourcePicker}<label>Recipient address<input id="send-recipient" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><label>Amount<div class="amount-input"><input id="send-amount" inputmode="decimal" autocomplete="off" placeholder="0.00" required><span>IPI</span></div></label><div class="review" id="send-review"><span>Network</span><strong>ipi-testnet-1</strong><span>Maximum fixed fee</span><strong>${fee}</strong></div><div class="dialog-error" id="send-error"></div><button class="button primary wide" id="send-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review transfer" : "Insert or tap card to continue"}</button></form>`;
@@ -547,7 +546,7 @@ async function handleSend(event: SubmitEvent): Promise<void> {
       if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
         const review = await window.ipiDesktop.reviewVaultTransfer(vaultAddress, recipient, amount);
         pendingVaultAction = { fingerprint, review };
-        reviewBox.innerHTML = `<span>Shared vault</span><strong>${escapeHtml(review.contractAddress)}</strong><span>Recipient</span><strong>${escapeHtml(review.target)}</strong><span>Amount</span><strong>${escapeHtml(formatIpi(review.amount!))}</strong><span>Card network fee</span><strong>${escapeHtml(formatIpi(review.fee))}</strong><span>Vault balance</span><strong>${escapeHtml(formatIpi(review.vaultBalance!))}</strong>`;
+        reviewBox.innerHTML = `<span>Shared vault</span><strong>${escapeHtml(review.contractAddress)}</strong><span>Recipient</span><strong>${escapeHtml(review.target)}</strong><span>Amount</span><strong>${escapeHtml(formatIpi(review.amount!))}</strong><span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "shared wallet" : "card controller"}</strong><span>Vault balance</span><strong>${escapeHtml(formatIpi(review.vaultBalance!))}</strong>`;
         submit.textContent = "Sign shared transfer with this card";
       } else {
         submit.textContent = "Broadcasting and waiting…";
@@ -593,7 +592,7 @@ function showVaultReview(review: VaultReview): void {
         : review.action === "cancel" ? "Cancel pending invitation"
           : review.action === "remove" ? "Remove full-access card"
             : "Transfer shared funds";
-  box.innerHTML = `<span>Operation</span><strong>${escapeHtml(action)}</strong><span>Signer card</span><strong>${escapeHtml(review.signer)}</strong>${review.target ? `<span>Target card</span><strong>${escapeHtml(review.target)}</strong>` : ""}<span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))}</strong><span>Expires</span><strong>${escapeHtml(new Date(review.expiresAt).toLocaleTimeString())}</strong>`;
+  box.innerHTML = `<span>Operation</span><strong>${escapeHtml(action)}</strong><span>Signer card</span><strong>${escapeHtml(review.signer)}</strong>${review.target ? `<span>Target card</span><strong>${escapeHtml(review.target)}</strong>` : ""}<span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "shared wallet" : "card controller"}</strong><span>Expires</span><strong>${escapeHtml(new Date(review.expiresAt).toLocaleTimeString())}</strong>`;
 }
 
 async function finishVaultAction(review: VaultReview): Promise<VaultResult> {
@@ -607,16 +606,14 @@ async function finishVaultAction(review: VaultReview): Promise<VaultResult> {
 
 async function handleVaultCreate(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  const input = document.querySelector<HTMLInputElement>("#vault-create-label")!;
   const submit = document.querySelector<HTMLButtonElement>("#vault-create-submit")!;
   const error = document.querySelector("#vault-error")!;
-  const label = input.value.trim();
-  const fingerprint = `create|${label}`;
+  const fingerprint = "create";
   submit.disabled = true;
   error.textContent = "";
   try {
     if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
-      const review = await window.ipiDesktop.reviewVaultCreate(label);
+      const review = await window.ipiDesktop.reviewVaultCreate();
       pendingVaultAction = { fingerprint, review };
       showVaultReview(review);
       submit.textContent = "Sign and create shared account";
@@ -660,17 +657,15 @@ async function handleVaultInvite(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   if (!vaultAddress) return;
   const addressInput = document.querySelector<HTMLInputElement>("#vault-invite-address")!;
-  const labelInput = document.querySelector<HTMLInputElement>("#vault-invite-label")!;
   const submit = document.querySelector<HTMLButtonElement>("#vault-invite-submit")!;
   const error = document.querySelector("#vault-error")!;
   const invitedAddress = addressInput.value.trim();
-  const label = labelInput.value.trim();
-  const fingerprint = `invite|${vaultAddress}|${invitedAddress}|${label}`;
+  const fingerprint = `invite|${vaultAddress}|${invitedAddress}`;
   submit.disabled = true;
   error.textContent = "";
   try {
     if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
-      const review = await window.ipiDesktop.reviewVaultInvite(vaultAddress, invitedAddress, label);
+      const review = await window.ipiDesktop.reviewVaultInvite(vaultAddress, invitedAddress);
       pendingVaultAction = { fingerprint, review };
       showVaultReview(review);
       submit.textContent = "Sign and publish invitation";
