@@ -27,8 +27,10 @@ function optionalPositiveInteger(name: string): string | null {
   return raw;
 }
 
+const VERIFIED_TESTNET_CARD_VAULT_CODE_ID = "2";
+
 export const CARD_VAULT = Object.freeze({
-  codeId: optionalPositiveInteger("IPI_CARD_VAULT_CODE_ID"),
+  codeId: optionalPositiveInteger("IPI_CARD_VAULT_CODE_ID") ?? VERIFIED_TESTNET_CARD_VAULT_CODE_ID,
   executeFeeBase: "1200000000000000",
   executeGasLimit: 800_000n,
   instantiateFeeBase: "2250000000000000",

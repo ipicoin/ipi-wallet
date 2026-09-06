@@ -60,10 +60,11 @@ overrides are available through `IPI_ETHEREUM_MAINNET_RPC` and
 
 The shared-card contract, tracked Wasm artifact and node-operator handoff live
 in the separate sibling repository `ipi-wallet-multicards`. Its verified IPI
-Testnet code ID must be provided through `IPI_CARD_VAULT_CODE_ID`. The wallet
-accepts only immutable instances matching that exact code ID. The shared vault
-sponsors CosmWasm execution fees for its equally authorized cards when funded;
-the creating card must still pay the one-time instantiation fee.
+Testnet deployment uses code ID `2`, which is the built-in default. It can be
+explicitly overridden through `IPI_CARD_VAULT_CODE_ID`. The wallet accepts only
+immutable instances matching that exact code ID. The shared vault sponsors
+CosmWasm execution fees for its equally authorized cards when funded; the
+creating card must still pay the one-time instantiation fee.
 
 ## Validation and production-mode run
 

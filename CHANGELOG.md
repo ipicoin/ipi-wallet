@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enabled the independently verified `ipi-testnet-1` Card Vault deployment at
+  code ID `2` by default while retaining an explicit environment override.
 - Integrated one shared Card Vault address with fully equal, unnumbered one-of-N
   cards and vault-sponsored CosmWasm execution fees.
 - Added a process-local, view-only wallet session that survives card removal.
