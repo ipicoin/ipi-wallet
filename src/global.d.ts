@@ -8,6 +8,7 @@ interface Window {
   ipiDesktop: {
     getNetworkStatus(): Promise<NetworkStatus>;
     openExternal(url: string): Promise<void>;
+    copyAddress(address: string): Promise<void>;
     getWalletStatus(): Promise<{ account: AccountStatus; chains: Record<"ethereum" | "bitcoin", ChainAccountStatus> }>;
     initializeChain(chain: "ethereum" | "bitcoin", credential: string, recoveryCredential: string, expectedSalt: string | null): Promise<ChainAccountStatus>;
     recoverChainPassword(chain: "ethereum" | "bitcoin", recoveryCredential: string, nextCredential: string, expectedSalt: string | null): Promise<ChainAccountStatus>;

@@ -16,6 +16,7 @@ if (!window.ipiDesktop) {
   window.ipiDesktop = {
     getNetworkStatus: async () => ({ checkedAt: new Date().toISOString(), cosmos: { online: true, height: 388873, error: null }, evm: { online: true, height: 388873, error: null } }),
     openExternal: async (url) => { window.open(url, "_blank", "noopener,noreferrer"); },
+    copyAddress: async (address) => navigator.clipboard.writeText(address),
     getWalletStatus: async () => ({
       account: { exists: false, installed: false, cardConnected: false, address: null, publicKey: null, reader: "Browser preview", profile: "none", credentialSalt: null, security: { supported: false, state: "disconnected", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false },
       chains: {
@@ -76,6 +77,7 @@ let securityToast = "";
 let securityToastTimer: number | undefined;
 const BALANCE_REFRESH_INTERVAL_MS = 5_000;
 const CARD_RECOVERY_INTERVAL_MS = 3_000;
+const REVIEW_EXECUTION_MARGIN_MS = 5_000;
 
 const links = Object.freeze({
   explorer: "https://scan.ipi.io/",
@@ -396,7 +398,8 @@ function renderView(view: ViewName): void {
   const receiveAddress = document.querySelector("#receive-address");
   if (receiveAddress) receiveAddress.textContent = active.address;
   if (active.address) renderReceiveQr(active.address);
-  document.querySelector("#copy-address")?.addEventListener("click", () => active.address && void navigator.clipboard.writeText(active.address));
+  const copyAddressButton = document.querySelector<HTMLButtonElement>("#copy-address");
+  copyAddressButton?.addEventListener("click", () => active.address && void copyAddressWithFeedback(active.address, copyAddressButton));
   document.querySelector<HTMLSelectElement>("#asset-select")?.addEventListener("change", (event) => {
     selectedAsset = (event.currentTarget as HTMLSelectElement).value as AssetSelector;
     renderView("overview");
@@ -430,7 +433,8 @@ function renderView(view: ViewName): void {
     if (target) void handleVaultMembershipAction("remove", target, button);
   }));
   document.querySelectorAll("#vault-disconnect").forEach((button) => button.addEventListener("click", forgetVault));
-  document.querySelector("#vault-copy-address")?.addEventListener("click", () => vaultStatus && void navigator.clipboard.writeText(vaultStatus.contractAddress));
+  const copyVaultButton = document.querySelector<HTMLButtonElement>("#vault-copy-address");
+  copyVaultButton?.addEventListener("click", () => vaultStatus && void copyAddressWithFeedback(vaultStatus.contractAddress, copyVaultButton));
   document.querySelector<HTMLFormElement>("#unlock-form")?.addEventListener("submit", (event) => void handleUnlock(event));
   document.querySelector<HTMLFormElement>("#change-password-form")?.addEventListener("submit", (event) => void handlePasswordChange(event));
   document.querySelector<HTMLFormElement>("#recovery-form")?.addEventListener("submit", (event) => void handleRecovery(event));
@@ -543,7 +547,8 @@ async function handleSend(event: SubmitEvent): Promise<void> {
     if (sendSource === "vault") {
       if (!vaultAddress || !vaultStatus?.currentMember) throw new Error("This card is not active in a shared vault");
       const fingerprint = `transfer|${vaultAddress}|${recipient}|${amount}`;
-      if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
+      const reviewToExecute = usableVaultReview(fingerprint);
+      if (!reviewToExecute) {
         const review = await window.ipiDesktop.reviewVaultTransfer(vaultAddress, recipient, amount);
         pendingVaultAction = { fingerprint, review };
         reviewBox.innerHTML = `<span>Shared vault</span><strong>${escapeHtml(review.contractAddress)}</strong><span>Recipient</span><strong>${escapeHtml(review.target)}</strong><span>Amount</span><strong>${escapeHtml(formatIpi(review.amount!))}</strong><span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "shared wallet" : "card controller"}</strong><span>Vault balance</span><strong>${escapeHtml(formatIpi(review.vaultBalance!))}</strong>`;
@@ -551,7 +556,7 @@ async function handleSend(event: SubmitEvent): Promise<void> {
       } else {
         submit.textContent = "Broadcasting and waiting…";
         executionRequested = true;
-        const result = await window.ipiDesktop.executeVaultAction(pendingVaultAction.review.reviewId);
+        const result = await window.ipiDesktop.executeVaultAction(reviewToExecute.reviewId);
         pendingVaultAction = null;
         await refreshVault(true);
         reviewBox.innerHTML = `<span>Status</span><strong>Confirmed at block ${escapeHtml(result.height)}</strong><span>Transaction</span><strong>${escapeHtml(result.txHash)}</strong><span>Authority</span><strong>One active card · signature locally verified</strong>`;
@@ -595,6 +600,29 @@ function showVaultReview(review: VaultReview): void {
   box.innerHTML = `<span>Operation</span><strong>${escapeHtml(action)}</strong><span>Signer card</span><strong>${escapeHtml(review.signer)}</strong>${review.target ? `<span>Target card</span><strong>${escapeHtml(review.target)}</strong>` : ""}<span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "shared wallet" : "card controller"}</strong><span>Expires</span><strong>${escapeHtml(new Date(review.expiresAt).toLocaleTimeString())}</strong>`;
 }
 
+function usableVaultReview(fingerprint: string): VaultReview | null {
+  if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) return null;
+  const expiresAt = Date.parse(pendingVaultAction.review.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt - Date.now() <= REVIEW_EXECUTION_MARGIN_MS) {
+    pendingVaultAction = null;
+    return null;
+  }
+  return pendingVaultAction.review;
+}
+
+async function copyAddressWithFeedback(address: string, button: HTMLButtonElement): Promise<void> {
+  const originalLabel = button.textContent ?? "Copy address";
+  try {
+    await window.ipiDesktop.copyAddress(address);
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  window.setTimeout(() => {
+    if (button.isConnected) button.textContent = originalLabel;
+  }, 1_500);
+}
+
 async function finishVaultAction(review: VaultReview): Promise<VaultResult> {
   const result = await window.ipiDesktop.executeVaultAction(review.reviewId);
   vaultAddress = result.contractAddress;
@@ -612,14 +640,15 @@ async function handleVaultCreate(event: SubmitEvent): Promise<void> {
   submit.disabled = true;
   error.textContent = "";
   try {
-    if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
+    const reviewToExecute = usableVaultReview(fingerprint);
+    if (!reviewToExecute) {
       const review = await window.ipiDesktop.reviewVaultCreate();
       pendingVaultAction = { fingerprint, review };
       showVaultReview(review);
       submit.textContent = "Sign and create shared account";
     } else {
       submit.textContent = "Creating and confirming…";
-      await finishVaultAction(pendingVaultAction.review);
+      await finishVaultAction(reviewToExecute);
       account = { ...account, unlocked: false };
       renderView("cards");
     }
@@ -664,14 +693,15 @@ async function handleVaultInvite(event: SubmitEvent): Promise<void> {
   submit.disabled = true;
   error.textContent = "";
   try {
-    if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
+    const reviewToExecute = usableVaultReview(fingerprint);
+    if (!reviewToExecute) {
       const review = await window.ipiDesktop.reviewVaultInvite(vaultAddress, invitedAddress);
       pendingVaultAction = { fingerprint, review };
       showVaultReview(review);
       submit.textContent = "Sign and publish invitation";
     } else {
       submit.textContent = "Publishing and confirming…";
-      await finishVaultAction(pendingVaultAction.review);
+      await finishVaultAction(reviewToExecute);
       account = { ...account, unlocked: false };
       renderView("cards");
     }
@@ -690,14 +720,15 @@ async function handleVaultAccept(): Promise<void> {
   submit.disabled = true;
   error.textContent = "";
   try {
-    if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
+    const reviewToExecute = usableVaultReview(fingerprint);
+    if (!reviewToExecute) {
       const review = await window.ipiDesktop.reviewVaultAccept(vaultAddress);
       pendingVaultAction = { fingerprint, review };
       showVaultReview(review);
       submit.textContent = "Sign and join shared account";
     } else {
       submit.textContent = "Joining and confirming…";
-      await finishVaultAction(pendingVaultAction.review);
+      await finishVaultAction(reviewToExecute);
       account = { ...account, unlocked: false };
       sendSource = "vault";
       renderView("cards");
@@ -716,7 +747,8 @@ async function handleVaultMembershipAction(action: "cancel" | "remove", target: 
   submit.disabled = true;
   error.textContent = "";
   try {
-    if (!pendingVaultAction || pendingVaultAction.fingerprint !== fingerprint) {
+    const reviewToExecute = usableVaultReview(fingerprint);
+    if (!reviewToExecute) {
       const review = action === "cancel"
         ? await window.ipiDesktop.reviewVaultCancel(vaultAddress, target)
         : await window.ipiDesktop.reviewVaultRemove(vaultAddress, target);
@@ -725,7 +757,7 @@ async function handleVaultMembershipAction(action: "cancel" | "remove", target: 
       submit.textContent = action === "cancel" ? "Confirm cancellation" : "Confirm removal";
     } else {
       submit.textContent = action === "cancel" ? "Cancelling…" : "Removing…";
-      await finishVaultAction(pendingVaultAction.review);
+      await finishVaultAction(reviewToExecute);
       account = { ...account, unlocked: false };
       if (action === "remove" && target === account.address) sendSource = "card";
       renderView("cards");

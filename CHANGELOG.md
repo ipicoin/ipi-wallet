@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed address copying by routing it through Electron's native clipboard and
+  showing visible success or failure feedback.
+- Kept immutable vault reviews available while unlocking a card, extended their
+  lifetime to five minutes and refreshed stale reviews before execution.
 - Replaced the raw account-query HTTP 404 with an actionable funding message
   for newly initialized card addresses and clarified the vault creation fee.
 - Enabled the independently verified `ipi-testnet-1` Card Vault deployment at

@@ -16,6 +16,7 @@ export type VaultStatus = { contractAddress: string; codeId: string; balance: st
 contextBridge.exposeInMainWorld("ipiDesktop", Object.freeze({
   getNetworkStatus: (): Promise<NetworkStatus> => ipcRenderer.invoke("network:status"),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("external:open", url),
+  copyAddress: (address: string): Promise<void> => ipcRenderer.invoke("clipboard:write-address", address),
   getWalletStatus: (): Promise<{ account: AccountStatus; chains: Record<"ethereum" | "bitcoin", ChainAccountStatus> }> => ipcRenderer.invoke("wallet:status"),
   initializeChain: (chain: "ethereum" | "bitcoin", credential: string, recoveryCredential: string, expectedSalt: string | null): Promise<ChainAccountStatus> => ipcRenderer.invoke("chains:initialize", chain, credential, recoveryCredential, expectedSalt),
   recoverChainPassword: (chain: "ethereum" | "bitcoin", recoveryCredential: string, nextCredential: string, expectedSalt: string | null): Promise<ChainAccountStatus> => ipcRenderer.invoke("chains:recover", chain, recoveryCredential, nextCredential, expectedSalt),

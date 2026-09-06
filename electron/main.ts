@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -48,7 +48,7 @@ const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e
 const cardBridgePath = app.isPackaged
   ? join(process.resourcesPath, "card_bridge.py")
   : join(currentDir, "card_bridge.py");
-const REVIEW_TTL_MS = 90_000;
+const REVIEW_TTL_MS = 300_000;
 
 type CardSecurity = { supported: boolean; state: string; triesRemaining: number | null; retryLimit: number | null; recoverySupported: boolean; recoveryTriesRemaining: number | null; recoveryRetryLimit: number | null };
 type CardBridgeStatus = { connected: boolean; initialized: boolean; publicKey: string | null; reader: string; profile: string; credentialSalt: string | null; authCounter: number | null; security: CardSecurity };
@@ -730,6 +730,16 @@ handleIpc("external:open", async (_event, rawUrl: unknown) => {
   await shell.openExternal(url.toString());
 });
 
+handleIpc("clipboard:write-address", (_event, rawAddress: unknown) => {
+  if (typeof rawAddress !== "string") throw new TypeError("Address is required");
+  const address = rawAddress.toLowerCase().startsWith("ipi1")
+    ? validateIpiAddress(rawAddress)
+    : rawAddress.toLowerCase().startsWith("0x")
+      ? validateEthereumAddress(rawAddress)
+      : validateBitcoinMainnetAddress(rawAddress);
+  clipboard.writeText(address);
+});
+
 handleIpc("wallet:status", async () => walletSummary());
 
 handleIpc("chains:initialize", async (_event, rawChain: unknown, rawCredential: unknown, rawRecoveryCredential: unknown, rawExpectedSalt: unknown) => {
@@ -842,7 +852,9 @@ handleIpc("security:recover", async (_event, rawRecoveryCredential: unknown, raw
 });
 
 handleIpc("security:unlock", async (_event, rawCredential: unknown, rawExpectedSalt: unknown) => {
-  clearAllUnlocks();
+  // A review is immutable and already bound to this card's public key. Keep it
+  // while the user visits Security to unlock the card for the reviewed action.
+  clearUnlockCredential();
   const card = await cardBridge("status-profile", "ipi") as CardBridgeStatus;
   const credential = validateCredential(rawCredential);
   const expectedSalt = validateExpectedSalt(rawExpectedSalt, card);
@@ -930,8 +942,10 @@ handleIpc("send:execute", async (_event, rawReviewId: unknown) => {
   sendInProgress = true;
   try {
     const pending = pendingReviews.get(reviewId);
-    pendingReviews.delete(reviewId);
-    if (!pending || pending.expiresAt <= Date.now()) throw new Error("Transfer review expired; review the transaction again");
+    if (!pending || pending.expiresAt <= Date.now()) {
+      pendingReviews.delete(reviewId);
+      throw new Error("Transfer review expired; review the transaction again");
+    }
     const account = await accountSummary();
     if (!account.exists || !account.address || !account.publicKey) throw new Error("Insert an initialized IPI Card");
     if (!account.cardConnected) throw new Error("Insert or tap the IPI Card that opened this wallet session");
@@ -941,6 +955,8 @@ handleIpc("send:execute", async (_event, rawReviewId: unknown) => {
     }
     const balanceBefore = await queryBalance(account.address);
     if (BigInt(pending.review.amount) + BigInt(CHAIN.feeBase) > BigInt(balanceBefore)) throw new Error("Amount plus fee exceeds wallet balance");
+    if (!unlockSession?.matches(pending.publicKey)) throw new Error("Unlock the IPI Card in Security before signing");
+    pendingReviews.delete(reviewId);
     const { events: _events, ...result } = await signReviewedTransaction(pending);
     const balanceAfter = await queryBalance(account.address);
     const expectedDelta = BigInt(pending.review.amount) + BigInt(CHAIN.feeBase);
@@ -1214,8 +1230,10 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
   sendInProgress = true;
   try {
     const pending = pendingVaultReviews.get(reviewId);
-    pendingVaultReviews.delete(reviewId);
-    if (!pending || pending.expiresAt <= Date.now()) throw new Error("Vault review expired; review the operation again");
+    if (!pending || pending.expiresAt <= Date.now()) {
+      pendingVaultReviews.delete(reviewId);
+      throw new Error("Vault review expired; review the operation again");
+    }
     if (pending.review.codeId !== CARD_VAULT.codeId) throw new Error("Vault code configuration changed after review");
     const account = await accountSummary();
     requireVaultAccount(account);
@@ -1268,6 +1286,8 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
         if (!pending.review.amount || BigInt(pending.review.amount) > spendableBalance) throw new Error("The vault balance changed after review");
       }
     }
+    if (!unlockSession?.matches(pending.publicKey)) throw new Error("Unlock the IPI Card in Security before signing");
+    pendingVaultReviews.delete(reviewId);
     const signed = await signReviewedTransaction(pending);
     const contractAddress = pending.review.action === "create"
       ? instantiatedContractAddress(signed.events)
