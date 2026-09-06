@@ -51,11 +51,21 @@ membership, fee grant and human-readable action. Contract execution uses the
 same opaque, expiring `SignDoc` review and local signature verification as
 native transfers. The vault sponsors execution fees when its restricted
 feegrant and balance are available; otherwise the controller address pays.
-When at least two cards are active, the renderer treats the contract as the
-only primary IPI wallet: Overview and Receive expose its address and Send uses
-it without offering a controller-account source. Controller addresses remain
-necessary on-chain signer identities and are shown only as shortened management
-identifiers; incoming transfers to them cannot be prevented by the wallet.
+The renderer always keeps personal and shared accounts separate. Overview,
+Send from card and Receive on card expose the active card's own IPI account.
+Vault, Send from vault, Receive on vault and Cards hide shared account details
+unless the IPI password session is unlocked. This is a user-interface privacy
+gate, not encrypted local storage or protection from a compromised host.
+
+The sibling repository also contains `payment-relay`, an immutable
+zero-retention contract instantiated five times for a vault. The main process
+verifies code ID, absent admin, bound vault, unique addresses and slots `0..4`.
+It cryptographically shuffles all five addresses and builds one atomic
+transaction: vault-to-controller execution followed by a funded execution of
+the first relay. Recursive contract messages forward the exact amount until the
+final relay performs the recipient bank send. The review shows the exact route
+and payment ID; confirmation verifies every public relay event. A saved relay
+set is untrusted local input and is revalidated on-chain before each review.
 
 ## Build outputs
 

@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- Made a vault with two or more active cards the sole primary IPI account in
-  Overview, Receive and Send while retaining card addresses only as technical
-  signing-controller identifiers.
+- Separated personal card accounts from shared Vault, Cards, Send from vault
+  and Receive on vault views; shared details require an unlocked IPI session.
+- Added five verified immutable Payment Relays, cryptographic route shuffling,
+  exact pre-sign review, atomic vault payments and public event verification.
+- Added explicit Logout and moved the `Card · 3/3 keys` state into the sidebar.
 - Fixed address copying by routing it through Electron's native clipboard and
   showing visible success or failure feedback.
 - Kept immutable vault reviews available while unlocking a card, extended their

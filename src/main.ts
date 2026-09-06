@@ -17,6 +17,7 @@ if (!window.ipiDesktop) {
     getNetworkStatus: async () => ({ checkedAt: new Date().toISOString(), cosmos: { online: true, height: 388873, error: null }, evm: { online: true, height: 388873, error: null } }),
     openExternal: async (url) => { window.open(url, "_blank", "noopener,noreferrer"); },
     copyAddress: async (address) => navigator.clipboard.writeText(address),
+    logout: async () => ({ closed: true }),
     getWalletStatus: async () => ({
       account: { exists: false, installed: false, cardConnected: false, address: null, publicKey: null, reader: "Browser preview", profile: "none", credentialSalt: null, security: { supported: false, state: "disconnected", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false },
       chains: {
@@ -36,24 +37,26 @@ if (!window.ipiDesktop) {
     changeCardPassword: async () => { throw new Error("Card security is available in the Linux application"); },
     lockCard: async () => { throw new Error("Card security is available in the Linux application"); },
     onCardChanged: () => () => undefined,
+    onSecurityLocked: () => () => undefined,
     getBalance: async (address) => ({ address, amount: "0" }),
     reviewSend: async () => { throw new Error("Send is available in the Linux application"); },
     executeSend: async () => { throw new Error("Send is available in the Linux application"); },
-    getVaultConfiguration: async () => ({ available: false, codeId: null, chainId: "ipi-testnet-1" }),
+    getVaultConfiguration: async () => ({ available: false, codeId: null, chainId: "ipi-testnet-1", relayAvailable: false, relayCodeId: null, relayCount: 5 }),
     getVaultStatus: async () => { throw new Error("Card Vault is available in the Linux application"); },
+    getVaultRelayPoolStatus: async () => { throw new Error("Payment relays are available in the Linux application"); },
     reviewVaultCreate: async () => { throw new Error("Card Vault is available in the Linux application"); },
     reviewVaultInvite: async () => { throw new Error("Card Vault is available in the Linux application"); },
     reviewVaultAccept: async () => { throw new Error("Card Vault is available in the Linux application"); },
     reviewVaultCancel: async () => { throw new Error("Card Vault is available in the Linux application"); },
     reviewVaultRemove: async () => { throw new Error("Card Vault is available in the Linux application"); },
-    reviewVaultTransfer: async () => { throw new Error("Card Vault is available in the Linux application"); },
+    reviewVaultRelaySetup: async () => { throw new Error("Payment relays are available in the Linux application"); },
+    reviewVaultRelayTransfer: async () => { throw new Error("Payment relays are available in the Linux application"); },
     executeVaultAction: async () => { throw new Error("Card Vault is available in the Linux application"); },
   };
 }
 
-type ViewName = "overview" | "send" | "receive" | "cards" | "checkout" | "hardware" | "security" | "settings";
+type ViewName = "overview" | "send-card" | "receive-card" | "vault" | "send-vault" | "receive-vault" | "cards" | "checkout" | "hardware" | "security" | "settings";
 type AssetSelector = "ipi" | "ethereum" | "bitcoin";
-type SendSource = "card" | "vault";
 let account: AccountStatus = { exists: false, installed: false, cardConnected: false, address: null, publicKey: null, reader: "", profile: "none", credentialSalt: null, security: { supported: false, state: "disconnected", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false };
 const unavailableChain = (chain: "ethereum" | "bitcoin"): ChainAccountStatus => ({ chain, installed: false, initialized: false, address: null, publicKey: null, reader: "", profile: "none", credentialSalt: null, authCounter: null, security: { supported: false, state: "unavailable", triesRemaining: null, retryLimit: null, recoverySupported: false, recoveryTriesRemaining: null, recoveryRetryLimit: null }, unlocked: false });
 let chainAccounts: Record<"ethereum" | "bitcoin", ChainAccountStatus> = { ethereum: unavailableChain("ethereum"), bitcoin: unavailableChain("bitcoin") };
@@ -62,14 +65,14 @@ let selectedAsset: AssetSelector = "ipi";
 let balanceAmount = "0";
 let pendingSend: { recipient: string; amount: string; review: SendReview } | null = null;
 let pendingVaultAction: { fingerprint: string; review: VaultReview } | null = null;
-let vaultConfiguration: { available: boolean; codeId: string | null; chainId: string } = { available: false, codeId: null, chainId: "ipi-testnet-1" };
+let vaultConfiguration: VaultConfiguration = { available: false, codeId: null, chainId: "ipi-testnet-1", relayAvailable: false, relayCodeId: null, relayCount: 5 };
 let vaultAddress = localStorage.getItem("ipi-card-vault-address");
+let vaultRelayAddresses: string[] = [];
 let vaultStatus: VaultStatus | null = null;
 let vaultError = "";
 let vaultRefreshInProgress = false;
 let lastVaultRefresh = 0;
 let lastVaultCardAddress: string | null = null;
-let sendSource: SendSource = vaultAddress ? "vault" : "card";
 let balanceRefreshInProgress = false;
 let chainBalanceRefreshInProgress = false;
 let cardRecoveryInProgress = false;
@@ -78,6 +81,22 @@ let securityToastTimer: number | undefined;
 const BALANCE_REFRESH_INTERVAL_MS = 5_000;
 const CARD_RECOVERY_INTERVAL_MS = 3_000;
 const REVIEW_EXECUTION_MARGIN_MS = 5_000;
+
+function relayStorageKey(address: string): string {
+  return `ipi-payment-relays:${address}`;
+}
+
+function loadRelayAddresses(address: string | null): string[] {
+  if (!address) return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(relayStorageKey(address)) ?? "[]");
+    return Array.isArray(parsed) && parsed.every((value) => typeof value === "string") ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+vaultRelayAddresses = loadRelayAddresses(vaultAddress);
 
 const links = Object.freeze({
   explorer: "https://scan.ipi.io/",
@@ -88,9 +107,12 @@ const links = Object.freeze({
 
 const viewCopy: Record<ViewName, { eyebrow: string; title: string; description: string }> = {
   overview: { eyebrow: "PORTFOLIO", title: "Your wallet", description: "Assets authorized by your IPI Card." },
-  send: { eyebrow: "TRANSFER", title: "Send IPI", description: "Review every field before a transaction is signed." },
-  receive: { eyebrow: "ACCOUNT", title: "Receive", description: "Your active wallet address and shareable QR code." },
-  cards: { eyebrow: "SHARED ACCOUNT", title: "IPI Card Vault", description: "One IPI account controlled independently by every connected card." },
+  "send-card": { eyebrow: "CARD TRANSFER", title: "Send from card", description: "Spend only the balance of this physical card's IPI address." },
+  "receive-card": { eyebrow: "CARD ACCOUNT", title: "Receive on card", description: "The public addresses derived from the active physical card." },
+  vault: { eyebrow: "SHARED ACCOUNT", title: "Vault", description: "The shared account is shown only while the IPI Card is unlocked." },
+  "send-vault": { eyebrow: "VAULT TRANSFER", title: "Send from vault", description: "Pay through the vault's five transparent payment relays." },
+  "receive-vault": { eyebrow: "VAULT ACCOUNT", title: "Receive on vault", description: "Fund the shared CosmWasm account directly." },
+  cards: { eyebrow: "MEMBERSHIP", title: "Cards", description: "Active equal cards and invitations for this vault." },
   checkout: { eyebrow: "IPI CHECKOUT V2", title: "Approve the complete operation.", description: "Merchant, products, amount and ownership should be visible before approval." },
   hardware: { eyebrow: "SECURE ELEMENT", title: "IPI Card", description: "Independent card-only keys for each supported network." },
   security: { eyebrow: "CARD ACCESS", title: "Security", description: "Unlock the card or change its password-protected credential." },
@@ -99,8 +121,11 @@ const viewCopy: Record<ViewName, { eyebrow: string; title: string; description: 
 
 const navItems: Array<{ id: ViewName; icon: string; label: string }> = [
   { id: "overview", icon: "⌂", label: "Overview" },
-  { id: "send", icon: "↗", label: "Send" },
-  { id: "receive", icon: "↙", label: "Receive" },
+  { id: "send-card", icon: "↗", label: "Send from card" },
+  { id: "receive-card", icon: "↙", label: "Receive on card" },
+  { id: "vault", icon: "◇", label: "Vault" },
+  { id: "send-vault", icon: "⇢", label: "Send from vault" },
+  { id: "receive-vault", icon: "⇠", label: "Receive on vault" },
   { id: "cards", icon: "⊕", label: "Cards" },
   { id: "checkout", icon: "◫", label: "Checkout" },
   { id: "hardware", icon: "⌁", label: "IPI Card" },
@@ -117,11 +142,12 @@ app.innerHTML = `
     <aside class="sidebar">
       <div class="brand"><img src="./ipi-logo.svg" alt="IPI"><div><strong>IPI Wallet</strong><small>Card-only desktop</small></div></div>
       <nav>${navItems.map((item) => `<button class="nav-item${item.id === "overview" ? " active" : ""}" data-view="${item.id}"><span>${item.icon}</span>${item.label}</button>`).join("")}</nav>
+      <div class="session-card"><strong id="card-status">Connect card</strong><button class="text-button" id="logout" type="button">Logout</button></div>
       <div class="network-card"><div><i class="live-dot" id="network-dot"></i><span id="network-label">Checking network</span></div><strong>42424</strong><small>EVM chain ID · IPI Testnet</small></div>
       <div class="sidebar-links"><button data-external="status">Status</button><button data-external="webWallet">Web Wallet</button></div>
     </aside>
     <main class="workspace">
-      <header class="topbar"><div><strong>IPI Wallet</strong><small>IPI Testnet · Ethereum Mainnet · Bitcoin Mainnet</small></div><div class="top-actions"><button class="theme-toggle" id="theme-toggle" type="button" title="Change appearance"><span class="theme-sun">☀</span><span class="theme-moon">☾</span></button><span class="testnet-pill">MIXED NETWORKS</span><button class="button secondary" id="account-button">Connect card</button></div></header>
+      <header class="topbar"><div><strong>IPI Wallet</strong><small>IPI Testnet · Ethereum Mainnet · Bitcoin Mainnet</small></div><div class="top-actions"><button class="theme-toggle" id="theme-toggle" type="button" title="Change appearance"><span class="theme-sun">☀</span><span class="theme-moon">☾</span></button><span class="testnet-pill">MIXED NETWORKS</span></div></header>
       <section class="content">
         <div class="page-heading"><div><p id="eyebrow">IPI WALLET</p><h1 id="page-title">Your wallet, built around proof.</h1><span id="page-description">Independent card-only accounts for supported networks.</span></div><button class="icon-button" id="refresh" title="Refresh network">↻</button></div>
         <div id="view-root"></div>
@@ -158,19 +184,12 @@ function activeMemberVault(): VaultStatus | null {
   return vaultStatus?.currentMember ? vaultStatus : null;
 }
 
-function primarySharedVault(): VaultStatus | null {
-  const status = activeMemberVault();
-  return status && status.memberCount >= 2 ? status : null;
-}
-
 function assetDetails(asset: AssetSelector = selectedAsset) {
   if (asset === "ipi") {
-    const shared = primarySharedVault();
-    const amount = shared?.balance ?? balanceAmount;
     return {
-    asset, symbol: "IPI", name: shared ? "IPI Card Vault" : "IPI", network: shared ? "IPI Public Testnet · Shared" : "IPI Public Testnet", chain: "ipi-testnet-1",
-    initialized: account.exists, installed: account.installed, address: shared?.contractAddress ?? account.address,
-    balance: amount, formattedBalance: account.exists ? formatIpi(amount) : "— IPI",
+    asset, symbol: "IPI", name: "IPI", network: "IPI Public Testnet · Personal card", chain: "ipi-testnet-1",
+    initialized: account.exists, installed: account.installed, address: account.address,
+    balance: balanceAmount, formattedBalance: account.exists ? formatIpi(balanceAmount) : "— IPI",
     profile: account.profile, credentialSalt: account.credentialSalt, security: account.security, unlocked: account.unlocked,
     };
   }
@@ -315,28 +334,47 @@ function vaultInvitationRows(status: VaultStatus): string {
   return `<h3>Pending invitations</h3>${rows}`;
 }
 
-function renderCardsView(): string {
+function vaultUnlockNotice(): string {
+  return `<div class="form-panel settings">${notice("Vault locked", "Open Security and enter the IPI Card Password. The vault address and balance remain hidden until this session is unlocked.")}<button class="button primary" type="button" data-go-security>Open Security</button></div>`;
+}
+
+function renderVaultView(): string {
   if (!account.exists || !account.address) {
-    return notice("Insert an initialized IPI Card", "A card-derived IPI address is required to create or join a shared account.");
+    return notice("Insert an initialized IPI Card", "A card-derived IPI address is required to create or open a shared account.");
   }
+  if (!account.unlocked) return vaultUnlockNotice();
   if (!vaultConfiguration.available) {
-    return `${notice("Card Vault code is not deployed yet", "Build and store the audited CosmWasm contract, then set IPI_CARD_VAULT_CODE_ID to its immutable on-chain code ID.")}<div class="form-panel settings"><h3>Implementation ready</h3><p>The wallet will only connect to an immutable contract matching the configured code ID. This prevents a pasted address from redirecting signatures to unrelated contract code.</p></div>`;
+    return `${notice("Card Vault code is not deployed yet", "Build and store the audited CosmWasm contract, then configure its immutable on-chain code ID.")}<div class="form-panel settings"><h3>Contract verification</h3><p>The wallet accepts only immutable vault contracts matching the configured code ID.</p></div>`;
   }
   if (!vaultAddress) {
-    return `<div class="section-grid"><form class="form-panel" id="vault-create-form"><h3>Create a shared IPI account</h3><p>This card becomes the first equal member. Every card added later receives exactly the same full 1-of-N authority. There are no card numbers or privileged roles.</p><div class="review" id="vault-review"><span>Contract code</span><strong>${escapeHtml(vaultConfiguration.codeId)}</strong><span>Upgrade administrator</span><strong>None · immutable</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-create-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review vault creation" : "Insert or tap card to continue"}</button></form><form class="form-panel" id="vault-connect-form"><h3>Open an existing vault</h3><p>Use this on an invited card. The wallet verifies the contract code and checks its on-chain invitation.</p><label>Vault address<input id="vault-connect-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="dialog-error" id="vault-connect-error"></div><button class="button secondary wide">Verify and open</button></form></div>`;
+    return `<div class="section-grid"><form class="form-panel" id="vault-create-form"><h3>Create a shared IPI account</h3><p>This card becomes the first equal member. Adding another card later never creates card numbers or privileged roles.</p><div class="review" id="vault-review"><span>Contract code</span><strong>${escapeHtml(vaultConfiguration.codeId)}</strong><span>Upgrade administrator</span><strong>None · immutable</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-create-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review vault creation" : "Insert or tap card to continue"}</button></form><form class="form-panel" id="vault-connect-form"><h3>Open an existing vault</h3><p>Use this on an invited card. The wallet verifies the contract code and its on-chain invitation.</p><label>Vault address<input id="vault-connect-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="dialog-error" id="vault-connect-error"></div><button class="button secondary wide">Verify and open</button></form></div>`;
   }
   if (!vaultStatus) {
-    return `<div class="form-panel settings">${notice("Unable to open this vault", vaultError || "Vault state is loading.")}<code>${escapeHtml(vaultAddress)}</code><button class="button secondary" id="vault-disconnect">Forget this vault address</button></div>`;
+    return `<div class="form-panel settings">${notice("Unable to open this vault", vaultError || "Vault state is loading.")}<button class="button secondary" id="vault-disconnect">Forget this vault address</button></div>`;
+  }
+  const role = vaultStatus.currentMember ? "ACTIVE CARD" : vaultStatus.currentInvitation ? "INVITED CARD" : "NOT AUTHORIZED";
+  return `<div class="portfolio-card"><div class="portfolio-top"><div><span class="kicker">SHARED IPI BALANCE</span><div class="portfolio-value" id="vault-balance">${escapeHtml(formatIpi(vaultStatus.balance))}</div><small>${escapeHtml(vaultStatus.memberCount)} equal active ${vaultStatus.memberCount === 1 ? "card" : "cards"} · any one can authorize</small></div><span class="tag green">${role}</span></div><div class="portfolio-account"><div><span>Vault account address</span><code>${escapeHtml(vaultStatus.contractAddress)}</code></div><button class="text-button" id="vault-copy-address">Copy</button></div></div>`;
+}
+
+function renderCardsView(): string {
+  if (!account.exists || !account.address) {
+    return notice("Insert an initialized IPI Card", "An initialized card is required to manage vault membership.");
+  }
+  if (!account.unlocked) return vaultUnlockNotice();
+  if (!vaultAddress) {
+    return `<div class="form-panel settings">${notice("No vault is open", "Create or open the shared account in the Vault tab first.")}<button class="button primary" type="button" data-go-vault>Open Vault</button></div>`;
+  }
+  if (!vaultStatus) {
+    return `<div class="form-panel settings">${notice("Unable to load vault membership", vaultError || "Vault state is loading.")}<button class="button secondary" id="vault-disconnect">Forget locally</button></div>`;
   }
   const status = vaultStatus;
-  const role = status.currentMember ? "ACTIVE CARD" : status.currentInvitation ? "INVITED CARD" : "NOT AUTHORIZED";
   const invitationPanel = status.currentInvitation && !status.currentMember
-    ? `<div class="form-panel"><h3>Accept invitation</h3><p>This physical card was invited to the shared address. After acceptance it behaves exactly like every existing card.</p><div class="review" id="vault-review"><span>Shared account</span><strong>${escapeHtml(status.contractAddress)}</strong><span>Authority</span><strong>Full 1-of-${escapeHtml(status.memberCount + 1)}</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-accept" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review acceptance" : "Insert or tap card to continue"}</button></div>`
+    ? `<div class="form-panel"><h3>Accept invitation</h3><p>This physical card was invited to the vault. After acceptance it behaves exactly like every existing card.</p><div class="review" id="vault-review"><span>Authority after acceptance</span><strong>Full 1-of-${escapeHtml(status.memberCount + 1)}</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-accept" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review acceptance" : "Insert or tap card to continue"}</button></div>`
     : "";
   const managementPanel = status.currentMember
-    ? `<form class="form-panel" id="vault-invite-form"><h3>Add another equal card</h3><p>The new card becomes active only after signing its own acceptance. It receives no number or special role and can perform every vault action.</p><label>New card IPI controller address<input id="vault-invite-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="review" id="vault-review"><span>Shared address</span><strong>${escapeHtml(status.contractAddress)}</strong><span>Result</span><strong>New full 1-of-N member after acceptance</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-invite-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review invitation" : "Insert or tap card to continue"}</button></form>`
+    ? `<form class="form-panel" id="vault-invite-form"><h3>Add another equal card</h3><p>The new card becomes active only after signing its own acceptance. It receives no number or special role.</p><label>New card IPI controller address<input id="vault-invite-address" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><div class="review" id="vault-review"><span>Result</span><strong>New full 1-of-N member after acceptance</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="vault-invite-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review invitation" : "Insert or tap card to continue"}</button></form>`
     : `${notice("This card is not authorized", "It has neither active membership nor a valid invitation for this shared account.")}`;
-  return `<div class="portfolio-card"><div class="portfolio-top"><div><span class="kicker">SHARED IPI BALANCE</span><div class="portfolio-value" id="vault-balance">${escapeHtml(formatIpi(status.balance))}</div><small>${escapeHtml(status.memberCount)} active ${status.memberCount === 1 ? "card" : "cards"} · any one can authorize</small></div><span class="tag green">${role}</span></div><div class="portfolio-account"><div><span>Shared receive address</span><code>${escapeHtml(status.contractAddress)}</code></div><button class="text-button" id="vault-copy-address">Copy</button></div></div><div class="section-grid"><div class="form-panel settings"><h3>Active cards</h3>${vaultMemberRows(status)}${vaultInvitationRows(status)}${status.memberCount > status.members.length ? `<p>Showing the first ${escapeHtml(status.members.length)} cards. Membership itself has no fixed contract limit.</p>` : ""}<button class="button secondary" id="vault-disconnect">Forget locally</button></div><div>${invitationPanel || managementPanel}</div></div>`;
+  return `<div class="section-grid"><div class="form-panel settings"><h3>Active cards</h3>${vaultMemberRows(status)}${vaultInvitationRows(status)}${status.memberCount > status.members.length ? `<p>Showing the first ${escapeHtml(status.members.length)} cards. Membership itself has no fixed contract limit.</p>` : ""}</div><div>${invitationPanel || managementPanel}</div></div>`;
 }
 
 function renderView(view: ViewName): void {
@@ -353,7 +391,6 @@ function renderView(view: ViewName): void {
   if (view === "overview") {
     const active = assetDetails();
     const fiat = selectedAsset === "ipi" && active.initialized ? formatUsd(active.balance) : "No fiat valuation";
-    const sharedIpi = selectedAsset === "ipi" && Boolean(primarySharedVault());
     const cardState = active.security.state === "blocked"
       ? "● CARD BLOCKED"
       : active.initialized && !account.cardConnected ? "○ SESSION ACTIVE · INSERT TO SIGN"
@@ -363,27 +400,29 @@ function renderView(view: ViewName): void {
       <div class="portfolio-card">
         <div class="portfolio-top"><div><span class="kicker">SELECTED NETWORK BALANCE</span><div class="portfolio-value" id="wallet-balance">${escapeHtml(active.formattedBalance)}</div><div class="portfolio-fiat" id="wallet-balance-usd">${escapeHtml(fiat)}</div><small>${selectedAsset === "ipi" ? "Declared testnet rate: 1 IPI = $2.00 USD" : "No fiat price is declared for this asset in IPI Wallet"}</small></div><label class="asset-picker">Asset<select id="asset-select" aria-label="Select asset"><option value="ipi" ${selectedAsset === "ipi" ? "selected" : ""}>IPI · Testnet</option><option value="ethereum" ${selectedAsset === "ethereum" ? "selected" : ""}>ETH · Mainnet</option><option value="bitcoin" ${selectedAsset === "bitcoin" ? "selected" : ""}>BTC · Mainnet</option></select></label></div>
         <div class="portfolio-account"><div><span>${active.symbol} wallet address</span><code id="wallet-address">${escapeHtml(active.address ?? (active.installed ? "Profile not initialized" : "IPI Card or applet unavailable"))}</code></div><span class="card-state ${active.initialized && active.security.state !== "blocked" && account.cardConnected ? "online" : ""}">${cardState}</span></div>
-        <div class="portfolio-actions"><button class="button primary" id="portfolio-receive" ${active.initialized ? "" : "disabled"}>Receive ${active.symbol}</button><button class="button secondary" id="portfolio-send" ${selectedAsset === "ipi" && active.initialized ? "" : "disabled"}>${selectedAsset === "ipi" ? "Send IPI" : "Send coming next"}</button>${active.initialized ? "" : `<button class="button secondary" id="initialize-selected" ${account.cardConnected && allWalletAppletsInstalled() ? "" : "disabled"}>Initialize entire card</button>`}</div>
+        <div class="portfolio-actions"><button class="button primary" id="portfolio-receive" ${active.initialized ? "" : "disabled"}>Receive ${active.symbol}</button><button class="button secondary" id="portfolio-send" ${selectedAsset === "ipi" && active.initialized ? "" : "disabled"}>${selectedAsset === "ipi" ? "Send from card" : "Send coming next"}</button>${active.initialized ? "" : `<button class="button secondary" id="initialize-selected" ${account.cardConnected && allWalletAppletsInstalled() ? "" : "disabled"}>Initialize entire card</button>`}</div>
       </div>
-      <div class="portfolio-grid"><div class="asset-list">${assetRow("ipi")}${assetRow("ethereum")}${assetRow("bitcoin")}</div><article class="network-summary"><div><span>Network</span><strong>${escapeHtml(active.network)}</strong></div><div><span>Chain</span><strong>${escapeHtml(active.chain)}</strong></div><div><span>Custody</span><strong>${sharedIpi ? "Shared CosmWasm vault · card-authorized" : "Dedicated card applet"}</strong></div>${selectedAsset === "ipi" ? `<div><span>Latest block</span><strong id="cosmos-height">—</strong></div><div><span>EVM head</span><strong id="evm-height">—</strong></div><button data-external="explorer">Open explorer ↗</button>` : ""}</article></div>`;
-  } else if (view === "send") {
-    const memberVault = activeMemberVault();
-    const canUseVault = Boolean(memberVault);
-    const sharedOnly = Boolean(memberVault && memberVault.memberCount >= 2);
-    if (!canUseVault) sendSource = "card";
-    if (sharedOnly) sendSource = "vault";
-    const sourcePicker = canUseVault && !sharedOnly ? `<label>Source<select id="send-source"><option value="vault" ${sendSource === "vault" ? "selected" : ""}>Shared IPI Card Vault</option><option value="card" ${sendSource === "card" ? "selected" : ""}>This card address</option></select></label>` : "";
-    const sourceNotice = sendSource === "vault"
-      ? notice("Shared 1-of-N transfer", "The amount leaves the shared contract. This card authorizes it independently; the shared wallet sponsors the network fee whenever its fee grant is available.")
-      : notice("Card-signed IPI Testnet transaction", "A password-protected card consumes its unlock authorization for one signing attempt. The returned signature is verified locally before broadcast.");
-    const fee = sendSource === "vault" ? "0.0012 IPI" : "0.0003 IPI";
-    viewRoot.innerHTML = !account.exists ? `${notice("Connect your IPI Card first", "An initialized card is required to open a wallet session.")}` : `${signingCardNotice()}${sourceNotice}<form class="form-panel" id="send-form">${sourcePicker}<label>Recipient address<input id="send-recipient" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><label>Amount<div class="amount-input"><input id="send-amount" inputmode="decimal" autocomplete="off" placeholder="0.00" required><span>IPI</span></div></label><div class="review" id="send-review"><span>Network</span><strong>ipi-testnet-1</strong><span>Maximum fixed fee</span><strong>${fee}</strong></div><div class="dialog-error" id="send-error"></div><button class="button primary wide" id="send-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review transfer" : "Insert or tap card to continue"}</button></form>`;
-  } else if (view === "receive") {
+      <div class="portfolio-grid"><div class="asset-list">${assetRow("ipi")}${assetRow("ethereum")}${assetRow("bitcoin")}</div><article class="network-summary"><div><span>Network</span><strong>${escapeHtml(active.network)}</strong></div><div><span>Chain</span><strong>${escapeHtml(active.chain)}</strong></div><div><span>Custody</span><strong>Dedicated card applet</strong></div>${selectedAsset === "ipi" ? `<div><span>Latest block</span><strong id="cosmos-height">—</strong></div><div><span>EVM head</span><strong id="evm-height">—</strong></div><button data-external="explorer">Open explorer ↗</button>` : ""}</article></div>`;
+  } else if (view === "send-card") {
+    viewRoot.innerHTML = !account.exists ? notice("Connect your IPI Card first", "An initialized card is required to send IPI.") : `${signingCardNotice()}${notice("Personal card transfer", "Funds leave only this card's public IPI address. The returned signature is verified locally before broadcast.")}<form class="form-panel" id="send-form" data-send-source="card"><label>Recipient address<input id="send-recipient" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><label>Amount<div class="amount-input"><input id="send-amount" inputmode="decimal" autocomplete="off" placeholder="0.00" required><span>IPI</span></div></label><div class="review" id="send-review"><span>Network</span><strong>ipi-testnet-1</strong><span>Maximum fixed fee</span><strong>0.0003 IPI</strong><span>Source</span><strong>${escapeHtml(account.address)}</strong></div><div class="dialog-error" id="send-error"></div><button class="button primary wide" id="send-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review card transfer" : "Insert or tap card to continue"}</button></form>`;
+  } else if (view === "receive-card") {
     const active = assetDetails();
-    const sharedReceive = selectedAsset === "ipi" && Boolean(primarySharedVault());
     const mainnetWarning = selectedAsset === "ipi" ? "" : notice("Real network — real funds", "Receive is enabled, but mainnet Send remains disabled until transaction-intent validation and recovery are ready.");
-    const custodyCopy = sharedReceive ? "Every active card can authorize spending from this contract account." : `Its private key was generated and remains inside the dedicated ${active.symbol} applet.`;
-    viewRoot.innerHTML = `${assetSwitcher(selectedAsset)}${mainnetWarning}${active.initialized && active.address ? `<div class="receive-card"><span class="tag">${active.symbol} · ${active.network.toUpperCase()}</span><div class="qr-frame"><canvas id="receive-qr" role="img" aria-label="QR code containing this ${active.symbol} address"></canvas></div><code id="receive-address"></code><p>Scan to receive ${active.symbol}. The QR contains only the address shown above.</p><p>${escapeHtml(custodyCopy)}</p><button class="button secondary" id="copy-address">Copy address</button></div>` : `${notice(`${active.symbol} address is not ready`, allWalletAppletsInstalled() ? "Initialize the complete card with one shared password for IPI, ETH and BTC." : "Insert a fully provisioned IPI Card.")}<div class="empty-state"><div class="qr-placeholder">▦</div><h3>No ${active.symbol} address yet</h3><p>Initialization is one-way and private keys cannot be exported.</p><button class="button primary" id="receive-create" ${allWalletAppletsInstalled() ? "" : "disabled"}>Initialize entire card</button></div>`}`;
+    viewRoot.innerHTML = `${assetSwitcher(selectedAsset)}${mainnetWarning}${active.initialized && active.address ? `<div class="receive-card"><span class="tag">${active.symbol} · ${active.network.toUpperCase()}</span><div class="qr-frame"><canvas id="receive-qr" role="img" aria-label="QR code containing this ${active.symbol} address"></canvas></div><code id="receive-address"></code><p>Scan to receive ${active.symbol}. The QR contains only this card's address.</p><p>${escapeHtml(`Its private key was generated and remains inside the dedicated ${active.symbol} applet.`)}</p><button class="button secondary" id="copy-address">Copy address</button></div>` : `${notice(`${active.symbol} address is not ready`, allWalletAppletsInstalled() ? "Initialize the complete card with one shared password for IPI, ETH and BTC." : "Insert a fully provisioned IPI Card.")}<div class="empty-state"><div class="qr-placeholder">▦</div><h3>No ${active.symbol} address yet</h3><p>Initialization is one-way and private keys cannot be exported.</p><button class="button primary" id="receive-create" ${allWalletAppletsInstalled() ? "" : "disabled"}>Initialize entire card</button></div>`}`;
+  } else if (view === "vault") {
+    viewRoot.innerHTML = `${signingCardNotice()}${renderVaultView()}`;
+  } else if (view === "send-vault") {
+    if (!account.exists) viewRoot.innerHTML = notice("Insert an initialized IPI Card", "The vault requires an active card session.");
+    else if (!account.unlocked) viewRoot.innerHTML = vaultUnlockNotice();
+    else if (!vaultStatus?.currentMember) viewRoot.innerHTML = `<div class="form-panel settings">${notice("No active vault membership", "Open a vault or accept its invitation before sending shared funds.")}<button class="button primary" type="button" data-go-cards>Open Cards</button></div>`;
+    else if (!vaultConfiguration.relayAvailable) viewRoot.innerHTML = notice("Payment Relay code is not deployed", "The server must store the audited payment-relay Wasm and configure IPI_PAYMENT_RELAY_CODE_ID before this feature can be used.");
+    else if (vaultRelayAddresses.length !== vaultConfiguration.relayCount) viewRoot.innerHTML = `${notice("Create the vault payment route once", "Five immutable contracts will be bound to this vault. The active card pays the one-time instantiate fee.")}<div class="section-grid"><form class="form-panel" id="relay-setup-form"><h3>Create five payment relays</h3><p>Every payment uses all five relays in a fresh random order. Their route remains public and auditable on-chain.</p><div class="review" id="vault-review"><span>Relay code</span><strong>${escapeHtml(vaultConfiguration.relayCodeId)}</strong><span>Administrator</span><strong>None · immutable</strong><span>Maximum setup fee</span><strong>0.0075 IPI · active card</strong></div><div class="dialog-error" id="vault-error"></div><button class="button primary wide" id="relay-setup-submit" ${account.cardConnected ? "" : "disabled"}>Review relay setup</button></form><form class="form-panel" id="relay-connect-form"><h3>Connect an existing relay set</h3><p>Paste the five addresses if this vault was configured on another computer. Every contract and slot is verified on-chain.</p><label>Five relay addresses<textarea id="relay-connect-addresses" rows="7" spellcheck="false" placeholder="ipi1…&#10;ipi1…&#10;ipi1…&#10;ipi1…&#10;ipi1…" required></textarea></label><div class="dialog-error" id="relay-connect-error"></div><button class="button secondary wide">Verify relay set</button></form></div>`;
+    else viewRoot.innerHTML = `${signingCardNotice()}${notice("Transparent receiver-balance privacy", "The recipient sees the final relay as the immediate bank sender. The vault, card controller and all five randomized hops remain publicly traceable in the same atomic transaction.")}<form class="form-panel" id="send-form" data-send-source="vault"><label>Recipient address<input id="send-recipient" autocomplete="off" spellcheck="false" placeholder="ipi1…" required></label><label>Amount<div class="amount-input"><input id="send-amount" inputmode="decimal" autocomplete="off" placeholder="0.00" required><span>IPI</span></div></label><div class="review" id="send-review"><span>Source</span><strong>Unlocked vault · ${escapeHtml(formatIpi(vaultStatus.balance))}</strong><span>Route</span><strong>5 / 5 relays · new random order</strong><span>Maximum fixed fee</span><strong>0.0075 IPI</strong></div><div class="dialog-error" id="send-error"></div><button class="button primary wide" id="send-submit" ${account.cardConnected ? "" : "disabled"}>${account.cardConnected ? "Review vault payment" : "Insert or tap card to continue"}</button></form>`;
+  } else if (view === "receive-vault") {
+    if (!account.exists) viewRoot.innerHTML = notice("Insert an initialized IPI Card", "The vault requires an active card session.");
+    else if (!account.unlocked) viewRoot.innerHTML = vaultUnlockNotice();
+    else if (!vaultStatus?.currentMember) viewRoot.innerHTML = notice("No active vault membership", "Open a vault or accept its invitation first.");
+    else viewRoot.innerHTML = `<div class="receive-card"><span class="tag">IPI · SHARED VAULT</span><div class="qr-frame"><canvas id="receive-qr" role="img" aria-label="QR code containing the shared vault address"></canvas></div><code id="receive-address"></code><p>Send IPI directly to the shared vault account shown above.</p><p>Every active equal card can authorize spending from this account.</p><button class="button secondary" id="copy-address">Copy vault address</button></div>`;
   } else if (view === "cards") {
     viewRoot.innerHTML = `${signingCardNotice()}${renderCardsView()}`;
   } else if (view === "checkout") {
@@ -408,11 +447,14 @@ function renderView(view: ViewName): void {
   }
   bindDynamicActions();
   const active = assetDetails();
+  const activeReceiveAddress = view === "receive-vault" && account.unlocked && vaultStatus?.currentMember
+    ? vaultStatus.contractAddress
+    : active.address;
   const receiveAddress = document.querySelector("#receive-address");
-  if (receiveAddress) receiveAddress.textContent = active.address;
-  if (active.address) renderReceiveQr(active.address);
+  if (receiveAddress) receiveAddress.textContent = activeReceiveAddress;
+  if (activeReceiveAddress) renderReceiveQr(activeReceiveAddress);
   const copyAddressButton = document.querySelector<HTMLButtonElement>("#copy-address");
-  copyAddressButton?.addEventListener("click", () => active.address && void copyAddressWithFeedback(active.address, copyAddressButton));
+  copyAddressButton?.addEventListener("click", () => activeReceiveAddress && void copyAddressWithFeedback(activeReceiveAddress, copyAddressButton));
   document.querySelector<HTMLSelectElement>("#asset-select")?.addEventListener("change", (event) => {
     selectedAsset = (event.currentTarget as HTMLSelectElement).value as AssetSelector;
     renderView("overview");
@@ -427,12 +469,6 @@ function renderView(view: ViewName): void {
     renderView(view);
   }));
   document.querySelector<HTMLFormElement>("#send-form")?.addEventListener("submit", (event) => void handleSend(event));
-  document.querySelector<HTMLSelectElement>("#send-source")?.addEventListener("change", (event) => {
-    sendSource = (event.currentTarget as HTMLSelectElement).value as SendSource;
-    pendingSend = null;
-    pendingVaultAction = null;
-    renderView("send");
-  });
   document.querySelector<HTMLFormElement>("#vault-create-form")?.addEventListener("submit", (event) => void handleVaultCreate(event));
   document.querySelector<HTMLFormElement>("#vault-connect-form")?.addEventListener("submit", (event) => void handleVaultConnect(event));
   document.querySelector<HTMLFormElement>("#vault-invite-form")?.addEventListener("submit", (event) => void handleVaultInvite(event));
@@ -448,6 +484,11 @@ function renderView(view: ViewName): void {
   document.querySelectorAll("#vault-disconnect").forEach((button) => button.addEventListener("click", forgetVault));
   const copyVaultButton = document.querySelector<HTMLButtonElement>("#vault-copy-address");
   copyVaultButton?.addEventListener("click", () => vaultStatus && void copyAddressWithFeedback(vaultStatus.contractAddress, copyVaultButton));
+  document.querySelector<HTMLFormElement>("#relay-setup-form")?.addEventListener("submit", (event) => void handleRelaySetup(event));
+  document.querySelector<HTMLFormElement>("#relay-connect-form")?.addEventListener("submit", (event) => void handleRelayConnect(event));
+  document.querySelectorAll("[data-go-security]").forEach((button) => button.addEventListener("click", () => renderView("security")));
+  document.querySelectorAll("[data-go-vault]").forEach((button) => button.addEventListener("click", () => renderView("vault")));
+  document.querySelectorAll("[data-go-cards]").forEach((button) => button.addEventListener("click", () => renderView("cards")));
   document.querySelector<HTMLFormElement>("#unlock-form")?.addEventListener("submit", (event) => void handleUnlock(event));
   document.querySelector<HTMLFormElement>("#change-password-form")?.addEventListener("submit", (event) => void handlePasswordChange(event));
   document.querySelector<HTMLFormElement>("#recovery-form")?.addEventListener("submit", (event) => void handleRecovery(event));
@@ -546,6 +587,7 @@ async function lockSecurityTarget(): Promise<void> {
 
 async function handleSend(event: SubmitEvent): Promise<void> {
   event.preventDefault();
+  const source = (event.currentTarget as HTMLFormElement).dataset.sendSource;
   const recipientInput = document.querySelector<HTMLInputElement>("#send-recipient")!;
   const amountInput = document.querySelector<HTMLInputElement>("#send-amount")!;
   const submit = document.querySelector<HTMLButtonElement>("#send-submit")!;
@@ -557,25 +599,24 @@ async function handleSend(event: SubmitEvent): Promise<void> {
   submit.disabled = true;
   error.textContent = "";
   try {
-    if (sendSource === "vault") {
+    if (source === "vault") {
       if (!vaultAddress || !vaultStatus?.currentMember) throw new Error("This card is not active in a shared vault");
-      const fingerprint = `transfer|${vaultAddress}|${recipient}|${amount}`;
+      if (vaultRelayAddresses.length !== vaultConfiguration.relayCount) throw new Error("This vault does not have a verified payment relay set");
+      const fingerprint = `relay-transfer|${vaultAddress}|${vaultRelayAddresses.join(",")}|${recipient}|${amount}`;
       const reviewToExecute = usableVaultReview(fingerprint);
       if (!reviewToExecute) {
-        const review = await window.ipiDesktop.reviewVaultTransfer(vaultAddress, recipient, amount);
+        const review = await window.ipiDesktop.reviewVaultRelayTransfer(vaultAddress, vaultRelayAddresses, recipient, amount);
         pendingVaultAction = { fingerprint, review };
-        reviewBox.innerHTML = `<span>Shared vault</span><strong>${escapeHtml(review.contractAddress)}</strong><span>Recipient</span><strong>${escapeHtml(review.target)}</strong><span>Amount</span><strong>${escapeHtml(formatIpi(review.amount!))}</strong><span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "shared wallet" : "card controller"}</strong><span>Vault balance</span><strong>${escapeHtml(formatIpi(review.vaultBalance!))}</strong>`;
-        submit.textContent = "Sign shared transfer with this card";
+        reviewBox.innerHTML = `<span>Vault</span><strong>${escapeHtml(review.contractAddress)}</strong><span>Recipient</span><strong>${escapeHtml(review.target)}</strong><span>Amount</span><strong>${escapeHtml(formatIpi(review.amount!))}</strong><span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "vault" : "card controller"}</strong><span>Payment ID</span><strong>${escapeHtml(review.paymentId)}</strong><span>Exact route</span><strong>${(review.route ?? []).map((relay, index) => `${index + 1}. ${escapeHtml(relay)}`).join("<br>")}</strong>`;
+        submit.textContent = "Sign this exact vault payment";
       } else {
         submit.textContent = "Broadcasting and waiting…";
         executionRequested = true;
         const result = await window.ipiDesktop.executeVaultAction(reviewToExecute.reviewId);
         pendingVaultAction = null;
         await refreshVault(true);
-        reviewBox.innerHTML = `<span>Status</span><strong>Confirmed at block ${escapeHtml(result.height)}</strong><span>Transaction</span><strong>${escapeHtml(result.txHash)}</strong><span>Authority</span><strong>One active card · signature locally verified</strong>`;
-        submit.textContent = "Prepare another shared transfer";
-        recipientInput.value = "";
-        amountInput.value = "";
+        viewRoot.innerHTML = `<div class="form-panel settings">${notice("Vault payment confirmed", "All five randomized relay hops were verified in the public transaction events.")}<div class="review"><span>Block</span><strong>${escapeHtml(result.height)}</strong><span>Transaction</span><strong>${escapeHtml(result.txHash)}</strong><span>Payment ID</span><strong>${escapeHtml(result.paymentId)}</strong></div><button class="button primary" type="button" data-go-security>Unlock for another vault payment</button></div>`;
+        bindDynamicActions();
       }
     } else if (!pendingSend || pendingSend.recipient !== recipient || pendingSend.amount !== amount) {
       const review = await window.ipiDesktop.reviewSend(recipient, amount);
@@ -609,7 +650,9 @@ function showVaultReview(review: VaultReview): void {
       : review.action === "accept" ? "Accept full-access invitation"
         : review.action === "cancel" ? "Cancel pending invitation"
           : review.action === "remove" ? "Remove full-access card"
-            : "Transfer shared funds";
+            : review.action === "setup-relays" ? "Create five immutable payment relays"
+              : review.action === "relay-transfer" ? "Transfer through five public relays"
+                : "Transfer shared funds";
   box.innerHTML = `<span>Operation</span><strong>${escapeHtml(action)}</strong><span>Signer card</span><strong>${escapeHtml(review.signer)}</strong>${review.target ? `<span>Target card</span><strong>${escapeHtml(review.target)}</strong>` : ""}<span>Network fee</span><strong>${escapeHtml(formatIpi(review.fee))} · ${review.feeGranter ? "shared wallet" : "card controller"}</strong><span>Expires</span><strong>${escapeHtml(new Date(review.expiresAt).toLocaleTimeString())}</strong>`;
 }
 
@@ -640,9 +683,59 @@ async function finishVaultAction(review: VaultReview): Promise<VaultResult> {
   const result = await window.ipiDesktop.executeVaultAction(review.reviewId);
   vaultAddress = result.contractAddress;
   localStorage.setItem("ipi-card-vault-address", result.contractAddress);
+  if (result.relayAddresses) {
+    vaultRelayAddresses = result.relayAddresses;
+    localStorage.setItem(relayStorageKey(result.contractAddress), JSON.stringify(result.relayAddresses));
+  }
   pendingVaultAction = null;
   await refreshVault(true);
   return result;
+}
+
+async function handleRelaySetup(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  if (!vaultAddress) return;
+  const submit = document.querySelector<HTMLButtonElement>("#relay-setup-submit")!;
+  const error = document.querySelector("#vault-error")!;
+  const fingerprint = `setup-relays|${vaultAddress}|${vaultConfiguration.relayCodeId}`;
+  submit.disabled = true;
+  error.textContent = "";
+  try {
+    const reviewToExecute = usableVaultReview(fingerprint);
+    if (!reviewToExecute) {
+      const review = await window.ipiDesktop.reviewVaultRelaySetup(vaultAddress);
+      pendingVaultAction = { fingerprint, review };
+      showVaultReview(review);
+      submit.textContent = "Sign and create five relays";
+    } else {
+      submit.textContent = "Creating and verifying five relays…";
+      const result = await finishVaultAction(reviewToExecute);
+      if (result.relayAddresses?.length !== vaultConfiguration.relayCount) throw new Error("The confirmed relay set is incomplete");
+      account = { ...account, unlocked: false };
+      renderView("send-vault");
+    }
+  } catch (cause) {
+    error.textContent = friendlyError(cause, "Error: Relay setup failed");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function handleRelayConnect(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  if (!vaultAddress) return;
+  const input = document.querySelector<HTMLTextAreaElement>("#relay-connect-addresses")!;
+  const error = document.querySelector("#relay-connect-error")!;
+  error.textContent = "";
+  try {
+    const addresses = input.value.split(/[\s,;]+/).map((value) => value.trim()).filter(Boolean);
+    const result = await window.ipiDesktop.getVaultRelayPoolStatus(vaultAddress, addresses);
+    vaultRelayAddresses = result.relays;
+    localStorage.setItem(relayStorageKey(result.vault), JSON.stringify(result.relays));
+    renderView("send-vault");
+  } catch (cause) {
+    error.textContent = friendlyError(cause, "Error: Relay verification failed");
+  }
 }
 
 async function handleVaultCreate(event: SubmitEvent): Promise<void> {
@@ -688,7 +781,7 @@ async function handleVaultConnect(event: SubmitEvent): Promise<void> {
     vaultError = "";
     lastVaultRefresh = Date.now();
     localStorage.setItem("ipi-card-vault-address", status.contractAddress);
-    sendSource = status.currentMember ? "vault" : "card";
+    vaultRelayAddresses = loadRelayAddresses(status.contractAddress);
     renderView("cards");
   } catch (cause) {
     error.textContent = friendlyError(cause, "Error: Vault verification failed");
@@ -743,7 +836,6 @@ async function handleVaultAccept(): Promise<void> {
       submit.textContent = "Joining and confirming…";
       await finishVaultAction(reviewToExecute);
       account = { ...account, unlocked: false };
-      sendSource = "vault";
       renderView("cards");
     }
   } catch (cause) {
@@ -772,7 +864,6 @@ async function handleVaultMembershipAction(action: "cancel" | "remove", target: 
       submit.textContent = action === "cancel" ? "Cancelling…" : "Removing…";
       await finishVaultAction(reviewToExecute);
       account = { ...account, unlocked: false };
-      if (action === "remove" && target === account.address) sendSource = "card";
       renderView("cards");
     }
   } catch (cause) {
@@ -787,9 +878,9 @@ function forgetVault(): void {
   vaultStatus = null;
   vaultError = "";
   pendingVaultAction = null;
-  sendSource = "card";
+  vaultRelayAddresses = [];
   localStorage.removeItem("ipi-card-vault-address");
-  renderView("cards");
+  renderView("vault");
 }
 
 async function openExternal(key: keyof typeof links): Promise<void> {
@@ -801,8 +892,8 @@ function bindDynamicActions(): void {
     button.onclick = () => void openExternal(button.dataset.external as keyof typeof links);
   });
   ["initialize-selected", "receive-create", "initialize-all"].forEach((id) => document.querySelector(`#${id}`)?.addEventListener("click", openAccountDialog));
-  document.querySelector("#portfolio-receive")?.addEventListener("click", () => renderView("receive"));
-  document.querySelector("#portfolio-send")?.addEventListener("click", () => renderView("send"));
+  document.querySelector("#portfolio-receive")?.addEventListener("click", () => renderView("receive-card"));
+  document.querySelector("#portfolio-send")?.addEventListener("click", () => renderView("send-card"));
 }
 
 function openAccountDialog(): void {
@@ -834,9 +925,9 @@ async function refreshAccount(): Promise<void> {
     lastVaultCardAddress = null;
   }
   await refreshChainBalances();
-  const button = document.querySelector<HTMLButtonElement>("#account-button")!;
+  const cardStatus = document.querySelector<HTMLElement>("#card-status")!;
   const ready = [account.exists, chainAccounts.ethereum.initialized, chainAccounts.bitcoin.initialized].filter(Boolean).length;
-  button.textContent = account.cardConnected
+  cardStatus.textContent = account.cardConnected
     ? `● Card · ${ready}/3 keys`
     : account.exists ? "○ Session · insert card to sign" : "Connect card";
 }
@@ -857,18 +948,9 @@ async function refreshVault(force = false): Promise<void> {
     vaultError = "";
     lastVaultRefresh = Date.now();
     lastVaultCardAddress = account.address;
-    const formatted = formatIpi(vaultStatus.balance);
-    const vaultBalance = document.querySelector("#vault-balance");
-    if (vaultBalance) vaultBalance.textContent = formatted;
-    if (selectedAsset === "ipi" && vaultStatus.currentMember && vaultStatus.memberCount >= 2) {
-      const walletBalance = document.querySelector("#wallet-balance");
-      const walletBalanceUsd = document.querySelector("#wallet-balance-usd");
-      const walletAddress = document.querySelector("#wallet-address");
-      const assetBalance = document.querySelector("#asset-balance-ipi");
-      if (walletBalance) walletBalance.textContent = formatted;
-      if (walletBalanceUsd) walletBalanceUsd.textContent = formatUsd(vaultStatus.balance);
-      if (walletAddress) walletAddress.textContent = vaultStatus.contractAddress;
-      if (assetBalance) assetBalance.textContent = formatted;
+    if (account.unlocked) {
+      const vaultBalance = document.querySelector("#vault-balance");
+      if (vaultBalance) vaultBalance.textContent = formatIpi(vaultStatus.balance);
     }
   } catch (cause) {
     vaultStatus = null;
@@ -887,9 +969,8 @@ async function refreshBalance(): Promise<void> {
     const balance = await window.ipiDesktop.getBalance(expectedAddress);
     if (account.address !== expectedAddress || balance.address !== expectedAddress) return;
     balanceAmount = balance.amount;
-    const displayedAmount = primarySharedVault()?.balance ?? balanceAmount;
-    const formatted = formatIpi(displayedAmount);
-    const formattedUsd = formatUsd(displayedAmount);
+    const formatted = formatIpi(balanceAmount);
+    const formattedUsd = formatUsd(balanceAmount);
     const total = selectedAsset === "ipi" ? document.querySelector("#wallet-balance") : null;
     const totalUsd = selectedAsset === "ipi" ? document.querySelector("#wallet-balance-usd") : null;
     const asset = document.querySelector("#asset-balance-ipi");
@@ -1008,10 +1089,7 @@ async function refreshNetwork(): Promise<void> {
 
 document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((button) => button.addEventListener("click", () => renderView(button.dataset.view as ViewName)));
 document.querySelector("#refresh")!.addEventListener("click", () => void refreshNetwork());
-document.querySelector("#account-button")!.addEventListener("click", () => {
-  if (account.cardConnected) void refreshAccount().then(() => renderView("hardware"));
-  else if (account.exists) renderView("hardware");
-});
+document.querySelector("#logout")!.addEventListener("click", () => void window.ipiDesktop.logout());
 document.querySelector("#dialog-close")!.addEventListener("click", () => {
   document.querySelector<HTMLDialogElement>("#account-dialog")!.close();
   document.querySelector<HTMLFormElement>("#account-form")!.reset();
@@ -1032,6 +1110,13 @@ window.ipiDesktop.onCardChanged(() => {
     renderView(activeView);
     void refreshNetwork();
   }, 500);
+});
+window.ipiDesktop.onSecurityLocked(() => {
+  account = { ...account, unlocked: false };
+  pendingSend = null;
+  pendingVaultAction = null;
+  const activeView = document.querySelector<HTMLButtonElement>(".nav-item.active")?.dataset.view as ViewName || "overview";
+  if (["vault", "send-vault", "receive-vault", "cards"].includes(activeView)) renderView(activeView);
 });
 vaultConfiguration = await window.ipiDesktop.getVaultConfiguration();
 await refreshAccount();

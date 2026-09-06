@@ -10,8 +10,13 @@ application only reads public keys and requests authorized signatures.
 - an in-memory, view-only wallet session after the identified card is removed;
 - optional immutable CosmWasm IPI Card Vault with one-of-N shared access,
   delegated card invitations, card revocation and card-signed contract transfers;
-- one primary IPI receive address and balance throughout the wallet whenever a
-  vault has two or more active cards; controller addresses remain signing-only;
+- separate personal card and shared-vault flows: Overview, Send from card and
+  Receive on card always use the true physical-card address, while Vault,
+  Send from vault and Receive on vault require an unlocked IPI session;
+- five immutable, vault-bound Payment Relay contracts used in a fresh random
+  order for each atomic vault payment, with the complete route still public;
+- a dedicated Cards view containing equal active members and Add another equal
+  card, without card numbering or privileged roles;
 - Ethereum Mainnet address, balance and receive only;
 - Bitcoin Mainnet native SegWit address, balance and receive only;
 - isolated password/KDF domains for every card profile;
@@ -45,6 +50,7 @@ addresses and profile metadata. The card can then be removed while balances and
 receive addresses remain visible. Every signing operation still requires the
 same physical card to be present and unlocked; another initialized card switches
 the active session. Closing the application discards the session.
+The sidebar Logout control explicitly clears unlocks and closes the process.
 
 ## Development setup
 
@@ -67,6 +73,20 @@ explicitly overridden through `IPI_CARD_VAULT_CODE_ID`. The wallet accepts only
 immutable instances matching that exact code ID. The shared vault sponsors
 CosmWasm execution fees for its equally authorized cards when funded; the
 creating card must still pay the one-time instantiation fee.
+
+The relay contract and server handoff are in
+`ipi-wallet-multicards/payment-relay`. After its optimized Wasm is stored on the
+target chain, set `IPI_PAYMENT_RELAY_CODE_ID` to that chain's independently
+verified code ID. Until it is configured, Send from vault fails closed. The
+active card pays the one-time five-instance setup fee; later payments can use
+the vault's existing allowance because both top-level payment messages are
+`MsgExecuteContract`.
+
+Payment Relay is receiver-balance privacy, not anonymity: the final relay is
+the native bank sender immediately visible to a simple merchant application,
+but the vault, card controller, amount and all five hops remain traceable in the
+same public atomic transaction. The sibling `ipi-deanonimizer` reads that public
+evidence and maps the final relay back to its vault.
 
 ## Validation and production-mode run
 

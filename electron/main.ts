@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
@@ -13,7 +13,7 @@ import { MsgSend } from "cosmjs-types/cosmos/bank/v1beta1/tx";
 import { MsgExecuteContract, MsgInstantiateContract } from "cosmjs-types/cosmwasm/wasm/v1/tx";
 import { AuthInfo, Fee, ModeInfo, SignDoc, SignerInfo, TxBody, TxRaw } from "cosmjs-types/cosmos/tx/v1beta1/tx";
 import { SignMode } from "cosmjs-types/cosmos/tx/signing/v1beta1/signing";
-import { CARD_VAULT, CHAIN, ENDPOINTS } from "./config.js";
+import { CARD_VAULT, CHAIN, ENDPOINTS, PAYMENT_RELAY } from "./config.js";
 import { fetchJson } from "./network.js";
 import { assertUnsignedDecimal, CredentialSession, displayAmountToUint128, validateCredential, validateReviewId, withCredentialHex } from "./security.js";
 import { PublicWalletSession, type SessionChainStatus } from "./wallet-session.js";
@@ -69,7 +69,8 @@ type VaultStatus = {
   members: VaultMember[];
   invitations: VaultInvitation[];
 };
-type VaultAction = "create" | "invite" | "accept" | "cancel" | "remove" | "transfer";
+type PaymentRelay = { address: string; vault: string; slot: number; codeId: string };
+type VaultAction = "create" | "invite" | "accept" | "cancel" | "remove" | "setup-relays" | "relay-transfer";
 type VaultReview = {
   reviewId: string;
   expiresAt: string;
@@ -84,6 +85,9 @@ type VaultReview = {
   vaultBalance: string | null;
   chainId: string;
   codeId: string;
+  relayCodeId?: string;
+  route?: string[];
+  paymentId?: string;
 };
 type PendingVaultReview = { review: VaultReview; signDoc: SignDoc; publicKey: string; credentialSalt: string | null; expiresAt: number };
 const pendingReviews = new Map<string, PendingReview>();
@@ -116,9 +120,13 @@ function clearUnlockCredential(): void {
 }
 
 function clearAllUnlocks(): void {
+  const wasUnlocked = unlockSession !== null;
   clearUnlockCredential();
   pendingReviews.clear();
   pendingVaultReviews.clear();
+  if (wasUnlocked && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("security:locked");
+  }
 }
 
 function replaceUnlock(credential: Buffer, publicKey: string): void {
@@ -398,8 +406,9 @@ function encodeEthPubkey(key: Uint8Array): Uint8Array {
   return Uint8Array.from([0x0a, key.length, ...key]);
 }
 
-function makeMessageSignDoc(message: Any, publicKey: Uint8Array, accountNumber: bigint, sequence: bigint, fee: string, gasLimit: bigint, feeGranter = "") {
-  const bodyBytes = TxBody.encode(TxBody.fromPartial({ messages: [message], memo: "" })).finish();
+function makeMessagesSignDoc(messages: Any[], publicKey: Uint8Array, accountNumber: bigint, sequence: bigint, fee: string, gasLimit: bigint, feeGranter = "") {
+  if (messages.length === 0 || messages.length > 16) throw new Error("Transaction message count is unsupported");
+  const bodyBytes = TxBody.encode(TxBody.fromPartial({ messages, memo: "" })).finish();
   const authInfoBytes = AuthInfo.encode(AuthInfo.fromPartial({
     signerInfos: [SignerInfo.fromPartial({
       publicKey: Any.fromPartial({ typeUrl: CHAIN.publicKeyTypeUrl, value: encodeEthPubkey(publicKey) }),
@@ -408,6 +417,10 @@ function makeMessageSignDoc(message: Any, publicKey: Uint8Array, accountNumber: 
     fee: Fee.fromPartial({ amount: [{ denom: CHAIN.baseDenom, amount: fee }], gasLimit, granter: feeGranter }),
   })).finish();
   return SignDoc.fromPartial({ bodyBytes, authInfoBytes, chainId: CHAIN.cosmosChainId, accountNumber });
+}
+
+function makeMessageSignDoc(message: Any, publicKey: Uint8Array, accountNumber: bigint, sequence: bigint, fee: string, gasLimit: bigint, feeGranter = "") {
+  return makeMessagesSignDoc([message], publicKey, accountNumber, sequence, fee, gasLimit, feeGranter);
 }
 
 function makeSignDoc(fromAddress: string, toAddress: string, amount: string, publicKey: Uint8Array, accountNumber: bigint, sequence: bigint) {
@@ -448,6 +461,91 @@ function makeVaultExecuteSignDoc(
     sequence,
     CARD_VAULT.executeFeeBase,
     CARD_VAULT.executeGasLimit,
+    feeGranter ?? "",
+  );
+}
+
+function vaultExecuteAny(sender: string, contract: string, executeMessage: unknown, funds: Array<{ denom: string; amount: string }> = []): Any {
+  const message = MsgExecuteContract.fromPartial({
+    sender,
+    contract,
+    msg: jsonBytes(executeMessage),
+    funds,
+  });
+  return Any.fromPartial({
+    typeUrl: "/cosmwasm.wasm.v1.MsgExecuteContract",
+    value: MsgExecuteContract.encode(message).finish(),
+  });
+}
+
+function makeRelaySetupSignDoc(
+  sender: string,
+  vault: string,
+  publicKey: Uint8Array,
+  accountNumber: bigint,
+  sequence: bigint,
+) {
+  if (!PAYMENT_RELAY.codeId) throw new Error("IPI Payment Relay code ID is not configured");
+  const messages = Array.from({ length: PAYMENT_RELAY.count }, (_, slot) => {
+    const message = MsgInstantiateContract.fromPartial({
+      sender,
+      admin: "",
+      codeId: BigInt(PAYMENT_RELAY.codeId!),
+      label: `IPI Payment Relay ${slot + 1}/${PAYMENT_RELAY.count}`,
+      msg: jsonBytes({ vault, slot }),
+      funds: [],
+    });
+    return Any.fromPartial({
+      typeUrl: "/cosmwasm.wasm.v1.MsgInstantiateContract",
+      value: MsgInstantiateContract.encode(message).finish(),
+    });
+  });
+  return makeMessagesSignDoc(
+    messages,
+    publicKey,
+    accountNumber,
+    sequence,
+    PAYMENT_RELAY.setupFeeBase,
+    PAYMENT_RELAY.setupGasLimit,
+  );
+}
+
+function makeRelayPaymentSignDoc(
+  sender: string,
+  vault: string,
+  route: string[],
+  recipient: string,
+  amount: string,
+  paymentId: string,
+  publicKey: Uint8Array,
+  accountNumber: bigint,
+  sequence: bigint,
+  feeGranter: string | null,
+) {
+  if (route.length !== PAYMENT_RELAY.count) throw new Error("Exactly five payment relays are required");
+  const messages = [
+    vaultExecuteAny(sender, vault, { transfer: { recipient: sender, amount } }),
+    vaultExecuteAny(
+      sender,
+      route[0],
+      {
+        forward: {
+          controller: sender,
+          route: route.slice(1),
+          recipient,
+          payment_id: paymentId,
+        },
+      },
+      [{ denom: CHAIN.baseDenom, amount }],
+    ),
+  ];
+  return makeMessagesSignDoc(
+    messages,
+    publicKey,
+    accountNumber,
+    sequence,
+    PAYMENT_RELAY.paymentFeeBase,
+    PAYMENT_RELAY.paymentGasLimit,
     feeGranter ?? "",
   );
 }
@@ -494,6 +592,57 @@ async function queryVaultSmart(contractAddress: string, message: unknown): Promi
   const queryData = Buffer.from(JSON.stringify(message), "utf8").toString("base64");
   const payload = await fetchJson(`${ENDPOINTS.rest}/cosmwasm/wasm/v1/contract/${encodeURIComponent(contractAddress)}/smart/${encodeURIComponent(queryData)}`);
   return decodeSmartData(payload);
+}
+
+async function verifyPaymentRelay(rawAddress: unknown, expectedVault?: string): Promise<PaymentRelay> {
+  if (!PAYMENT_RELAY.codeId) throw new Error("IPI Payment Relay code ID is not configured");
+  const address = validateIpiAddress(rawAddress, "Payment relay");
+  const payload = await fetchJson(`${ENDPOINTS.rest}/cosmwasm/wasm/v1/contract/${encodeURIComponent(address)}`) as Record<string, any>;
+  const responseAddress = String(payload?.address ?? address).toLowerCase();
+  const info = payload?.contract_info ?? payload?.contractInfo;
+  const codeId = String(info?.code_id ?? info?.codeId ?? "");
+  const admin = info?.admin;
+  if (responseAddress !== address || codeId !== PAYMENT_RELAY.codeId) {
+    throw new Error("Address is not an approved IPI Payment Relay contract");
+  }
+  if (admin !== undefined && admin !== null && admin !== "") {
+    throw new Error("Payment relay contract is upgradeable by an external administrator");
+  }
+  const config = await queryVaultSmart(address, { config: {} });
+  const vault = validateIpiAddress(config?.vault, "Relay vault");
+  const slot = Number(config?.slot);
+  const relayCount = Number(config?.relay_count);
+  if (config?.denom !== CHAIN.baseDenom
+    || !Number.isSafeInteger(slot)
+    || slot < 0
+    || slot >= PAYMENT_RELAY.count
+    || relayCount !== PAYMENT_RELAY.count) {
+    throw new Error("Payment relay configuration is malformed");
+  }
+  if (expectedVault && vault !== expectedVault) throw new Error("Payment relay belongs to a different vault");
+  return { address, vault, slot, codeId };
+}
+
+async function validatePaymentRelayPool(rawRelays: unknown, rawVault: unknown): Promise<PaymentRelay[]> {
+  if (!Array.isArray(rawRelays) || rawRelays.length !== PAYMENT_RELAY.count) {
+    throw new Error(`Exactly ${PAYMENT_RELAY.count} payment relays are required`);
+  }
+  const vault = validateIpiAddress(rawVault, "Vault");
+  const addresses = rawRelays.map((address) => validateIpiAddress(address, "Payment relay"));
+  if (new Set(addresses).size !== PAYMENT_RELAY.count) throw new Error("Payment relay addresses must be unique");
+  const relays = await Promise.all(addresses.map((address) => verifyPaymentRelay(address, vault)));
+  const slots = relays.map((relay) => relay.slot).sort((left, right) => left - right);
+  if (slots.some((slot, index) => slot !== index)) throw new Error("Payment relay slots must cover 0 through 4 exactly once");
+  return relays;
+}
+
+function shuffledRelayAddresses(relays: PaymentRelay[]): string[] {
+  const route = relays.map((relay) => relay.address);
+  for (let index = route.length - 1; index > 0; index -= 1) {
+    const selected = randomInt(index + 1);
+    [route[index], route[selected]] = [route[selected], route[index]];
+  }
+  return route;
 }
 
 async function verifyVaultContract(contractAddress: string): Promise<string> {
@@ -646,7 +795,21 @@ function eventText(raw: unknown): string {
   }
 }
 
-function instantiatedContractAddress(events: unknown[]): string {
+function eventAttributeText(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  try {
+    const bytes = Buffer.from(raw, "base64");
+    const decoded = bytes.toString("utf8");
+    const canonical = bytes.toString("base64").replace(/=+$/, "");
+    if (canonical === raw.replace(/=+$/, "") && /^[\x20-\x7e]+$/.test(decoded)) return decoded;
+  } catch {
+    // REST responses may expose event attributes directly instead of base64.
+  }
+  return raw;
+}
+
+function instantiatedContractAddresses(events: unknown[], label: string): string[] {
+  const addresses: string[] = [];
   for (const rawEvent of events) {
     const event = rawEvent as Record<string, any>;
     if (!Array.isArray(event?.attributes)) continue;
@@ -654,10 +817,51 @@ function instantiatedContractAddress(events: unknown[]): string {
       const attribute = rawAttribute as Record<string, unknown>;
       const key = eventText(attribute.key);
       if (key !== "_contract_address" && key !== "contract_address") continue;
-      return validateIpiAddress(eventText(attribute.value), "Created vault");
+      const address = validateIpiAddress(eventText(attribute.value), label);
+      if (!addresses.includes(address)) addresses.push(address);
     }
   }
+  return addresses;
+}
+
+function instantiatedContractAddress(events: unknown[]): string {
+  const [address] = instantiatedContractAddresses(events, "Created vault");
+  if (address) return address;
   throw new Error("The instantiate transaction did not report a vault address");
+}
+
+function verifyRelayPaymentEvents(events: unknown[], review: VaultReview): void {
+  if (!review.contractAddress || !review.target || !review.amount || !review.paymentId || !review.route) {
+    throw new Error("Reviewed relay payment is incomplete");
+  }
+  const relayEvents = events.flatMap((rawEvent) => {
+    const event = rawEvent as Record<string, any>;
+    if (!String(event?.type ?? "").endsWith("ipi_payment_relay") || !Array.isArray(event?.attributes)) return [];
+    const attributes = new Map<string, string>();
+    for (const rawAttribute of event.attributes) {
+      const attribute = rawAttribute as Record<string, unknown>;
+      attributes.set(eventAttributeText(attribute.key), eventAttributeText(attribute.value));
+    }
+    return [attributes];
+  });
+  if (relayEvents.length !== PAYMENT_RELAY.count) throw new Error("Confirmed transaction did not report the complete payment relay route");
+  const eventsByRelay = new Map(relayEvents.map((attributes) => [attributes.get("relay"), attributes]));
+  if (eventsByRelay.size !== PAYMENT_RELAY.count) throw new Error("Confirmed payment relay events contain duplicate hops");
+  for (const [index, relay] of review.route.entries()) {
+    const attributes = eventsByRelay.get(relay);
+    if (!attributes) throw new Error("Confirmed payment relay route is missing a reviewed hop");
+    const expectedNext = review.route[index + 1] ?? review.target;
+    if (attributes.get("payment_id") !== review.paymentId
+      || attributes.get("vault") !== review.contractAddress
+      || attributes.get("controller") !== review.signer
+      || attributes.get("relay") !== relay
+      || attributes.get("next") !== expectedNext
+      || attributes.get("recipient") !== review.target
+      || attributes.get("amount") !== review.amount
+      || attributes.get("denom") !== CHAIN.baseDenom) {
+      throw new Error("Confirmed payment relay route differs from the reviewed operation");
+    }
+  }
 }
 
 function hexToNumber(value: unknown): number | null {
@@ -741,6 +945,12 @@ handleIpc("clipboard:write-address", (_event, rawAddress: unknown) => {
 });
 
 handleIpc("wallet:status", async () => walletSummary());
+
+handleIpc("wallet:logout", async () => {
+  clearAllUnlocks();
+  setImmediate(() => app.quit());
+  return { closed: true };
+});
 
 handleIpc("chains:initialize", async (_event, rawChain: unknown, rawCredential: unknown, rawRecoveryCredential: unknown, rawExpectedSalt: unknown) => {
   const chain = validateChainSelector(rawChain);
@@ -1010,7 +1220,7 @@ function storeVaultReview(
   return complete;
 }
 
-async function vaultSigningContext(fee: string, rawVaultAddress?: unknown) {
+async function vaultSigningContext(fee: string, rawVaultAddress?: unknown, allowFeeGrant = true) {
   const account = await accountSummary();
   requireVaultAccount(account);
   const vaultAddress = rawVaultAddress === undefined
@@ -1021,7 +1231,7 @@ async function vaultSigningContext(fee: string, rawVaultAddress?: unknown) {
     fetchJson(`${ENDPOINTS.comet}/status`) as Promise<Record<string, any>>,
     queryAccount(account.address),
     vaultAddress ? queryBalance(vaultAddress) : Promise.resolve("0"),
-    vaultAddress ? hasVaultFeeGrant(vaultAddress, account.address).catch(() => false) : Promise.resolve(false),
+    vaultAddress && allowFeeGrant ? hasVaultFeeGrant(vaultAddress, account.address).catch(() => false) : Promise.resolve(false),
   ]);
   assertIpiChain(cometStatus);
   const feeGranter = vaultAddress && vaultHasFeeGrant && BigInt(vaultBalance) >= BigInt(fee)
@@ -1040,12 +1250,27 @@ handleIpc("vault:configuration", async () => ({
   available: CARD_VAULT.codeId !== null,
   codeId: CARD_VAULT.codeId,
   chainId: CHAIN.cosmosChainId,
+  relayAvailable: PAYMENT_RELAY.codeId !== null,
+  relayCodeId: PAYMENT_RELAY.codeId,
+  relayCount: PAYMENT_RELAY.count,
 }));
 
 handleIpc("vault:status", async (_event, rawContractAddress: unknown) => {
   const account = await accountSummary();
   requireVaultAccount(account);
   return queryVaultStatus(rawContractAddress, account.address);
+});
+
+handleIpc("vault:relay-pool-status", async (_event, rawContractAddress: unknown, rawRelays: unknown) => {
+  const account = await accountSummary();
+  requireVaultAccount(account);
+  const status = await queryVaultStatus(rawContractAddress, account.address);
+  if (!status.currentMember) throw new Error("Only an active vault card can use its payment relays");
+  const relays = await validatePaymentRelayPool(rawRelays, status.contractAddress);
+  return {
+    vault: status.contractAddress,
+    relays: relays.sort((left, right) => left.slot - right.slot).map((relay) => relay.address),
+  };
 });
 
 handleIpc("vault:review-create", async () => {
@@ -1193,34 +1418,85 @@ handleIpc("vault:review-remove", async (_event, rawContractAddress: unknown, raw
   }, signDoc);
 });
 
-handleIpc("vault:review-transfer", async (_event, rawContractAddress: unknown, rawRecipient: unknown, rawAmount: unknown) => {
-  const recipient = validateIpiAddress(rawRecipient);
-  const amount = displayAmountToUint128(rawAmount, CHAIN.decimals);
-  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(CARD_VAULT.executeFeeBase, rawContractAddress);
+handleIpc("vault:review-setup-relays", async (_event, rawContractAddress: unknown) => {
+  if (!PAYMENT_RELAY.codeId) throw new Error("IPI Payment Relay code ID is not configured");
+  const { account, controllerBalance, chainAccount, feeGranter } = await vaultSigningContext(
+    PAYMENT_RELAY.setupFeeBase,
+    rawContractAddress,
+    false,
+  );
+  if (feeGranter) throw new Error("Payment relay setup must be paid by the active card address");
   const status = await queryVaultStatus(rawContractAddress, account.address);
-  if (!status.currentMember) throw new Error("Only an active vault card can transfer shared funds");
-  if (recipient === status.contractAddress) throw new Error("Recipient must differ from the vault");
-  const spendableBalance = BigInt(status.balance) - BigInt(feeGranter ? CARD_VAULT.executeFeeBase : "0");
-  if (BigInt(amount) > spendableBalance) throw new Error("Amount plus the network fee exceeds the shared vault balance");
-  const signDoc = makeVaultExecuteSignDoc(
+  if (!status.currentMember) throw new Error("Only an active vault card can create its payment relays");
+  const signDoc = makeRelaySetupSignDoc(
     account.address,
     status.contractAddress,
-    { transfer: { recipient, amount } },
+    Buffer.from(account.publicKey, "hex"),
+    chainAccount.accountNumber,
+    chainAccount.sequence,
+  );
+  return storeVaultReview(account, {
+    action: "setup-relays",
+    signer: account.address,
+    contractAddress: status.contractAddress,
+    target: null,
+    amount: null,
+    fee: PAYMENT_RELAY.setupFeeBase,
+    feeGranter: null,
+    controllerBalance,
+    vaultBalance: status.balance,
+    relayCodeId: PAYMENT_RELAY.codeId,
+  }, signDoc);
+});
+
+handleIpc("vault:review-relay-transfer", async (
+  _event,
+  rawContractAddress: unknown,
+  rawRelays: unknown,
+  rawRecipient: unknown,
+  rawAmount: unknown,
+) => {
+  if (!PAYMENT_RELAY.codeId) throw new Error("IPI Payment Relay code ID is not configured");
+  const recipient = validateIpiAddress(rawRecipient);
+  const amount = displayAmountToUint128(rawAmount, CHAIN.decimals);
+  const [{ account, controllerBalance, chainAccount, feeGranter }, relays] = await Promise.all([
+    vaultSigningContext(PAYMENT_RELAY.paymentFeeBase, rawContractAddress),
+    validatePaymentRelayPool(rawRelays, rawContractAddress),
+  ]);
+  const status = await queryVaultStatus(rawContractAddress, account.address);
+  if (!status.currentMember) throw new Error("Only an active vault card can transfer shared funds");
+  if (recipient === status.contractAddress || recipient === account.address || relays.some((relay) => relay.address === recipient)) {
+    throw new Error("Recipient must differ from the vault, active card and payment relays");
+  }
+  const spendableBalance = BigInt(status.balance) - BigInt(feeGranter ? PAYMENT_RELAY.paymentFeeBase : "0");
+  if (BigInt(amount) > spendableBalance) throw new Error("Amount plus the network fee exceeds the shared vault balance");
+  const route = shuffledRelayAddresses(relays);
+  const paymentId = randomBytes(32).toString("hex");
+  const signDoc = makeRelayPaymentSignDoc(
+    account.address,
+    status.contractAddress,
+    route,
+    recipient,
+    amount,
+    paymentId,
     Buffer.from(account.publicKey, "hex"),
     chainAccount.accountNumber,
     chainAccount.sequence,
     feeGranter,
   );
   return storeVaultReview(account, {
-    action: "transfer",
+    action: "relay-transfer",
     signer: account.address,
     contractAddress: status.contractAddress,
     target: recipient,
     amount,
-    fee: CARD_VAULT.executeFeeBase,
+    fee: PAYMENT_RELAY.paymentFeeBase,
     feeGranter,
     controllerBalance,
     vaultBalance: status.balance,
+    relayCodeId: PAYMENT_RELAY.codeId,
+    route,
+    paymentId,
   }, signDoc);
 });
 
@@ -1235,6 +1511,10 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
       throw new Error("Vault review expired; review the operation again");
     }
     if (pending.review.codeId !== CARD_VAULT.codeId) throw new Error("Vault code configuration changed after review");
+    if ((pending.review.action === "setup-relays" || pending.review.action === "relay-transfer")
+      && pending.review.relayCodeId !== PAYMENT_RELAY.codeId) {
+      throw new Error("Payment relay code configuration changed after review");
+    }
     const account = await accountSummary();
     requireVaultAccount(account);
     if (!account.cardConnected) throw new Error("Insert or tap the IPI Card that opened this wallet session");
@@ -1280,10 +1560,19 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
         const member = await queryVaultSmart(status.contractAddress, { member: { address: pending.review.target } });
         if (!member?.member) throw new Error("The card is no longer a vault member");
       }
-      if (pending.review.action === "transfer") {
+      if (pending.review.action === "setup-relays" && !status.currentMember) {
+        throw new Error("The active card is no longer a vault member");
+      }
+      if (pending.review.action === "relay-transfer") {
         if (!status.currentMember) throw new Error("The active card is no longer a vault member");
+        if (!pending.review.route || pending.review.route.length !== PAYMENT_RELAY.count) {
+          throw new Error("The reviewed payment relay route is incomplete");
+        }
+        await validatePaymentRelayPool(pending.review.route, status.contractAddress);
         const spendableBalance = BigInt(status.balance) - BigInt(pending.review.feeGranter ? pending.review.fee : "0");
-        if (!pending.review.amount || BigInt(pending.review.amount) > spendableBalance) throw new Error("The vault balance changed after review");
+        if (!pending.review.amount || BigInt(pending.review.amount) > spendableBalance) {
+          throw new Error("The vault balance changed after review");
+        }
       }
     }
     if (!unlockSession?.matches(pending.publicKey)) throw new Error("Unlock the IPI Card in Security before signing");
@@ -1294,11 +1583,32 @@ handleIpc("vault:execute", async (_event, rawReviewId: unknown) => {
       : pending.review.contractAddress;
     if (!contractAddress) throw new Error("Vault address is unavailable after confirmation");
     await verifyVaultContract(contractAddress);
+    let relayAddresses: string[] | undefined;
+    if (pending.review.action === "setup-relays") {
+      try {
+        const created = instantiatedContractAddresses(signed.events, "Created payment relay");
+        if (created.length !== PAYMENT_RELAY.count) {
+          throw new Error("relay setup transaction did not report exactly five contracts");
+        }
+        const relays = await validatePaymentRelayPool(created, contractAddress);
+        relayAddresses = relays.sort((left, right) => left.slot - right.slot).map((relay) => relay.address);
+      } catch (error) {
+        throw new Error(`Transaction ${signed.txHash} is confirmed, but relay discovery failed: ${error instanceof Error ? error.message : "unknown error"}. Do not retry; recover the five addresses from this transaction`);
+      }
+    }
+    if (pending.review.action === "relay-transfer") {
+      try {
+        verifyRelayPaymentEvents(signed.events, pending.review);
+      } catch (error) {
+        throw new Error(`Payment transaction ${signed.txHash} is confirmed, but public event verification failed: ${error instanceof Error ? error.message : "unknown error"}. Do not send it again`);
+      }
+    }
     return {
       ...pending.review,
       txHash: signed.txHash,
       height: signed.height,
       contractAddress,
+      relayAddresses,
       signatureVerified: true,
     };
   } finally {

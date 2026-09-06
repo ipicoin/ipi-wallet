@@ -10,6 +10,7 @@ interface Window {
     openExternal(url: string): Promise<void>;
     copyAddress(address: string): Promise<void>;
     getWalletStatus(): Promise<{ account: AccountStatus; chains: Record<"ethereum" | "bitcoin", ChainAccountStatus> }>;
+    logout(): Promise<{ closed: boolean }>;
     initializeChain(chain: "ethereum" | "bitcoin", credential: string, recoveryCredential: string, expectedSalt: string | null): Promise<ChainAccountStatus>;
     recoverChainPassword(chain: "ethereum" | "bitcoin", recoveryCredential: string, nextCredential: string, expectedSalt: string | null): Promise<ChainAccountStatus>;
     unlockChain(chain: "ethereum" | "bitcoin", credential: string, expectedSalt: string | null): Promise<ChainAccountStatus>;
@@ -22,17 +23,20 @@ interface Window {
     changeCardPassword(currentCredential: string, nextCredential: string, expectedSalt: string | null): Promise<AccountStatus>;
     lockCard(): Promise<AccountStatus>;
     onCardChanged(callback: () => void): () => void;
+    onSecurityLocked(callback: () => void): () => void;
     getBalance(address: string): Promise<{ address: string; amount: string }>;
     reviewSend(recipient: string, amount: string): Promise<SendReview>;
     executeSend(reviewId: string): Promise<SendResult>;
-    getVaultConfiguration(): Promise<{ available: boolean; codeId: string | null; chainId: string }>;
+    getVaultConfiguration(): Promise<VaultConfiguration>;
     getVaultStatus(contractAddress: string): Promise<VaultStatus>;
+    getVaultRelayPoolStatus(contractAddress: string, relays: string[]): Promise<{ vault: string; relays: string[] }>;
     reviewVaultCreate(): Promise<VaultReview>;
     reviewVaultInvite(contractAddress: string, cardAddress: string): Promise<VaultReview>;
     reviewVaultAccept(contractAddress: string): Promise<VaultReview>;
     reviewVaultCancel(contractAddress: string, cardAddress: string): Promise<VaultReview>;
     reviewVaultRemove(contractAddress: string, cardAddress: string): Promise<VaultReview>;
-    reviewVaultTransfer(contractAddress: string, recipient: string, amount: string): Promise<VaultReview>;
+    reviewVaultRelaySetup(contractAddress: string): Promise<VaultReview>;
+    reviewVaultRelayTransfer(contractAddress: string, relays: string[], recipient: string, amount: string): Promise<VaultReview>;
     executeVaultAction(reviewId: string): Promise<VaultResult>;
   };
 }
@@ -45,5 +49,6 @@ type SendResult = SendReview & { txHash: string; height: string; balanceBefore: 
 type VaultMember = { address: string };
 type VaultInvitation = { address: string };
 type VaultStatus = { contractAddress: string; codeId: string; balance: string; memberCount: number; currentMember: VaultMember | null; currentInvitation: VaultInvitation | null; members: VaultMember[]; invitations: VaultInvitation[] };
-type VaultReview = { reviewId: string; expiresAt: string; action: "create" | "invite" | "accept" | "cancel" | "remove" | "transfer"; signer: string; contractAddress: string | null; target: string | null; amount: string | null; fee: string; feeGranter: string | null; controllerBalance: string; vaultBalance: string | null; chainId: string; codeId: string };
-type VaultResult = VaultReview & { txHash: string; height: string; contractAddress: string; signatureVerified: boolean };
+type VaultConfiguration = { available: boolean; codeId: string | null; chainId: string; relayAvailable: boolean; relayCodeId: string | null; relayCount: number };
+type VaultReview = { reviewId: string; expiresAt: string; action: "create" | "invite" | "accept" | "cancel" | "remove" | "setup-relays" | "relay-transfer"; signer: string; contractAddress: string | null; target: string | null; amount: string | null; fee: string; feeGranter: string | null; controllerBalance: string; vaultBalance: string | null; chainId: string; codeId: string; relayCodeId?: string; route?: string[]; paymentId?: string };
+type VaultResult = VaultReview & { txHash: string; height: string; contractAddress: string; relayAddresses?: string[]; signatureVerified: boolean };

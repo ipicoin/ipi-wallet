@@ -37,6 +37,15 @@ export const CARD_VAULT = Object.freeze({
   instantiateGasLimit: 1_500_000n,
 });
 
+export const PAYMENT_RELAY = Object.freeze({
+  codeId: optionalPositiveInteger("IPI_PAYMENT_RELAY_CODE_ID"),
+  count: 5,
+  setupFeeBase: "7500000000000000",
+  setupGasLimit: 5_000_000n,
+  paymentFeeBase: "7500000000000000",
+  paymentGasLimit: 5_000_000n,
+});
+
 export const ENDPOINTS = Object.freeze({
   comet: secureEndpoint("IPI_COMET_ENDPOINT", "https://rpc-testnet.ipi.io"),
   evm: secureEndpoint("IPI_EVM_ENDPOINT", "https://evm-rpc-testnet.ipi.io"),

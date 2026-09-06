@@ -14,6 +14,8 @@ material value.
   isolated applet. Exhausting both leaves no supported recovery path.
 - Production cards require controlled issuance, unique GlobalPlatform keys,
   attestation and an independently reviewed applet.
+- Vault Payment Relay is transparent receiver-balance privacy, not anonymity.
+  The vault, controller, five hops, amount and recipient remain public on-chain.
 
 Never report passwords, derived credentials, administrative card keys or
 private operational logs in a public issue. Use GitHub's private

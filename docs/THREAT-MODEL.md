@@ -6,6 +6,7 @@
 - the exact Cosmos `SignDoc` approved by the user;
 - card AID/profile selection and chain identity;
 - IPI Card Vault membership, invitations and immutable code identity;
+- Payment Relay code identity, vault binding, exact five-hop route and amount;
 - release artifacts and update provenance.
 
 ## Trust boundaries and controls
@@ -29,6 +30,13 @@ through equal fee grants. An
 invited controller receives only a bounded acceptance allowance; active member
 allowances are revoked atomically when membership is removed. If sponsorship
 is unavailable, the controller must pay the fee itself.
+
+Every relay address remembered by the renderer is untrusted. Before setup or
+payment, the main process requires the configured relay code ID, no admin, the
+expected vault, five unique contracts and slots `0..4`. The first relay enforces
+four remaining unique relay slots. Relays retain no portion of a successful
+payment. This system does not defend against public-chain analysis and must not
+be represented as anonymity or transaction confidentiality.
 
 The signing credential is held in a zeroable main-process buffer for at most two
 minutes and one signing attempt. It is cleared on use, lock, window blur, screen
