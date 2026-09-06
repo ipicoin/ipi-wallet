@@ -51,6 +51,11 @@ membership, fee grant and human-readable action. Contract execution uses the
 same opaque, expiring `SignDoc` review and local signature verification as
 native transfers. The vault sponsors execution fees when its restricted
 feegrant and balance are available; otherwise the controller address pays.
+When at least two cards are active, the renderer treats the contract as the
+only primary IPI wallet: Overview and Receive expose its address and Send uses
+it without offering a controller-account source. Controller addresses remain
+necessary on-chain signer identities and are shown only as shortened management
+identifiers; incoming transfers to them cannot be prevented by the wallet.
 
 ## Build outputs
 

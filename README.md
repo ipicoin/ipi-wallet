@@ -10,6 +10,8 @@ application only reads public keys and requests authorized signatures.
 - an in-memory, view-only wallet session after the identified card is removed;
 - optional immutable CosmWasm IPI Card Vault with one-of-N shared access,
   delegated card invitations, card revocation and card-signed contract transfers;
+- one primary IPI receive address and balance throughout the wallet whenever a
+  vault has two or more active cards; controller addresses remain signing-only;
 - Ethereum Mainnet address, balance and receive only;
 - Bitcoin Mainnet native SegWit address, balance and receive only;
 - isolated password/KDF domains for every card profile;

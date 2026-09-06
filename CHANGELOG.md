@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made a vault with two or more active cards the sole primary IPI account in
+  Overview, Receive and Send while retaining card addresses only as technical
+  signing-controller identifiers.
 - Fixed address copying by routing it through Electron's native clipboard and
   showing visible success or failure feedback.
 - Kept immutable vault reviews available while unlocking a card, extended their
