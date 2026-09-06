@@ -40,9 +40,12 @@ for (const [relative, metadata] of Object.entries(packageLock.packages)) {
 }
 const projectPackage = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
 if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(projectPackage.version)) throw new Error("package.json contains an invalid release version");
+cpSync(join(projectRoot, "LICENSE"), join(bundleRoot, "LICENSE"));
+cpSync(join(projectRoot, "NOTICE"), join(bundleRoot, "NOTICE"));
 writeFileSync(join(bundleRoot, "package.json"), `${JSON.stringify({
   name: projectPackage.name,
   version: projectPackage.version,
+  license: projectPackage.license,
   main: "dist-electron/main.js",
   type: "module",
   dependencies: projectPackage.dependencies,
@@ -84,12 +87,15 @@ writeFileSync(join(debRoot, "DEBIAN/control"), [
   "",
 ].join("\n"), { mode: 0o644 });
 mkdirSync(join(debRoot, "usr/share/applications"), { recursive: true });
+mkdirSync(join(debRoot, "usr/share/icons/hicolor/512x512/apps"), { recursive: true });
+cpSync(join(projectRoot, "public/ipi-wallet.png"), join(debRoot, "usr/share/icons/hicolor/512x512/apps/ipi-wallet.png"));
 writeFileSync(join(debRoot, "usr/share/applications/ipi-wallet.desktop"), [
   "[Desktop Entry]",
   "Type=Application",
   "Name=IPI Wallet",
   "Exec=/opt/ipi-wallet/ipi-wallet",
-  "Icon=/opt/ipi-wallet/resources/ipi-wallet.png",
+  "Icon=ipi-wallet",
+  "StartupWMClass=ipi-wallet",
   "Categories=Finance;Utility;",
   "Terminal=false",
   "",
@@ -98,6 +104,7 @@ mkdirSync(join(debRoot, "usr/bin"), { recursive: true });
 cpSync(join(projectRoot, "scripts/host/ipi-browser-guard.sh"), join(debRoot, "usr/bin/ipi-wallet-browser-guard"));
 mkdirSync(join(debRoot, "usr/share/doc/ipi-wallet"), { recursive: true });
 cpSync(join(projectRoot, "LICENSE"), join(debRoot, "usr/share/doc/ipi-wallet/copyright"));
+cpSync(join(projectRoot, "NOTICE"), join(debRoot, "usr/share/doc/ipi-wallet/NOTICE"));
 cpSync(join(projectRoot, "docs/LINUX-SMARTCARD-BROWSERS.md"), join(debRoot, "usr/share/doc/ipi-wallet/LINUX-SMARTCARD-BROWSERS.md"));
 
 function normalizePermissions(directory) {

@@ -20,6 +20,9 @@ import { PublicWalletSession, type SessionChainStatus } from "./wallet-session.j
 
 const currentDir = fileURLToPath(new URL(".", import.meta.url));
 const isDevelopment = !app.isPackaged && process.env.NODE_ENV !== "production";
+const appIconPath = app.isPackaged
+  ? join(process.resourcesPath, "ipi-wallet.png")
+  : join(currentDir, isDevelopment ? "../public/ipi-wallet.png" : "../dist/ipi-wallet.png");
 const pythonExecutable = app.isPackaged ? "/usr/bin/python3" : (process.env.IPI_WALLET_PYTHON ?? "python3");
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 app.enableSandbox();
@@ -1624,9 +1627,7 @@ function createWindow(): void {
     minHeight: 700,
     backgroundColor: "#080d1d",
     title: "IPI Wallet — Testnet",
-    icon: isDevelopment
-      ? join(currentDir, "../public/ipi-wallet.png")
-      : join(currentDir, "../dist/ipi-wallet.png"),
+    icon: appIconPath,
     show: false,
     webPreferences: {
       preload: join(currentDir, "preload.cjs"),

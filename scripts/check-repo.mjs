@@ -58,8 +58,12 @@ if (stagedWhitespace.status !== 0) violations.push(stagedWhitespace.stdout.trim(
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 if (packageJson.private !== true) violations.push("package.json: wallet package must remain private");
-if (packageJson.license !== "UNLICENSED") violations.push("package.json: proprietary package must remain marked UNLICENSED");
-if (packageLock.lockfileVersion !== 3 || packageLock.packages?.[""]?.version !== packageJson.version) {
+if (packageJson.license !== "Apache-2.0") violations.push("package.json: package must remain licensed under Apache-2.0");
+if (
+  packageLock.lockfileVersion !== 3 ||
+  packageLock.packages?.[""]?.version !== packageJson.version ||
+  packageLock.packages?.[""]?.license !== packageJson.license
+) {
   violations.push("package-lock.json: root package metadata is inconsistent");
 }
 

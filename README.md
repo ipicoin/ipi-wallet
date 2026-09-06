@@ -108,3 +108,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for repository boundaries and
 runtime responsibilities. If installing OpenSC makes Firefox or Chromium stall
 while an IPI Card is inserted, use the persistent, reversible browser guard
 described in [docs/LINUX-SMARTCARD-BROWSERS.md](docs/LINUX-SMARTCARD-BROWSERS.md).
+
+## License
+
+Copyright 2026 IPI. Licensed under the Apache License, Version 2.0. See
+[LICENSE](LICENSE) and [NOTICE](NOTICE).
