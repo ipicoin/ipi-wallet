@@ -10,7 +10,8 @@ order. This keeps the vault from being the immediate bank sender displayed by a
 basic merchant receiver, but it does not hide the route from the chain. The
 vault, active controller, amount, recipient and every hop are deliberately
 recoverable from public transaction events. Anyone with explorer or REST access
-can trace them; `ipi-deanonimizer` merely automates that public analysis.
+can trace them; the **Deanonimizer** tab in `ipi-pokedex` automates that public
+analysis.
 
 Vault address and balance are hidden in the UI while IPI is locked. The locally
 remembered association is not encrypted against someone who already controls

@@ -85,8 +85,9 @@ the vault's existing allowance because both top-level payment messages are
 Payment Relay is receiver-balance privacy, not anonymity: the final relay is
 the native bank sender immediately visible to a simple merchant application,
 but the vault, card controller, amount and all five hops remain traceable in the
-same public atomic transaction. The sibling `ipi-deanonimizer` reads that public
-evidence and maps the final relay back to its vault.
+same public atomic transaction. The read-only **Deanonimizer** tab in
+`ipi-pokedex` reads that public evidence and maps the final relay back to its
+vault.
 
 ## Validation and production-mode run
 
